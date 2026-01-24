@@ -1,0 +1,38 @@
+# Brain-Inspired AI System Dependencies
+
+# Core framework
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Spiking Neural Networks
+snntorch>=0.7.0
+spikingjelly>=0.0.0.0.14
+
+# Liquid Neural Networks
+ncps>=0.0.7
+
+# Active Inference
+inferactively-pymdp>=0.0.7.1
+
+# Utilities
+numpy>=1.24.0
+scipy>=1.10.0
+einops>=0.6.0
+matplotlib>=3.7.0
+
+# Experiment tracking
+tensorboard>=2.12.0
+wandb>=0.15.0
+
+# Text processing (optional, for text encoder)
+transformers>=4.30.0
+tokenizers>=0.13.0
+
+# Testing
+pytest>=7.3.0
+pytest-cov>=4.1.0
+
+# Note: htm.core requires building from source
+# git clone https://github.com/htm-community/htm.core.git
+# cd htm.core && pip install -r requirements.txt && python setup.py install
