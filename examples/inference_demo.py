@@ -286,11 +286,17 @@ def demo_batch_processing(brain):
     
     print(f"\n📦 Processing {batch_size} images...")
     
+    # Reset state to ensure clean batch processing
+    brain.reset()
+    
     # Time single image processing
     start = time.time()
     for img in images[:4]:
         _ = brain.infer({'vision': img.unsqueeze(0)})
     single_time = (time.time() - start) / 4
+    
+    # Reset state before batch processing to avoid dimension mismatch
+    brain.reset()
     
     # Time batch processing
     start = time.time()
