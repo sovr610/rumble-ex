@@ -1,4 +1,13 @@
 # Brain-Inspired AI System Dependencies
+#
+# PYTHON VERSION COMPATIBILITY:
+# - Python 3.10-3.11: Full compatibility with all packages
+# - Python 3.12+: Some packages (learn2learn, avalanche-lib) have Cython issues
+#
+# For Python 3.12+, install with:
+#   pip install -r requirements.txt
+#   # Then manually install learn2learn from git if needed:
+#   pip install git+https://github.com/learnables/learn2learn.git
 
 # Core framework
 torch>=2.0.0
@@ -56,11 +65,25 @@ Pillow>=10.0.0
 # Phase 7: Meta-Learning / Continual Learning
 # ============================================
 # Meta-learning (Omniglot, mini-ImageNet, tiered-ImageNet)
-learn2learn>=0.2.0
-
+#
+# IMPORTANT: learn2learn has Python 3.12+ Cython compatibility issues.
+# The project includes a custom MAML implementation in brain_ai/meta/maml.py
+# that does NOT require learn2learn.
+#
+# For dataset loading, use torchvision or manual downloads:
+#   - Omniglot: torchvision.datasets.Omniglot
+#   - mini-ImageNet: Download from https://github.com/yaoyao-liu/mini-imagenet-tools
+#   - CIFAR-FS: Derived from torchvision.datasets.CIFAR100
+#
+# If you need learn2learn and have Python 3.10/3.11:
+#   pip install learn2learn
+#
+# For differentiable inner loops (works with all Python versions):
+higher>=0.2.1
 
 # Continual learning benchmarks
-avalanche-lib>=0.4.0
+# NOTE: avalanche-lib may have similar issues on Python 3.12+
+# If needed on Python 3.10/3.11: pip install avalanche-lib
 
 # ============================================
 # Utilities
