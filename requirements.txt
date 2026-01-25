@@ -4,22 +4,73 @@
 torch>=2.0.0
 torchvision>=0.15.0
 torchaudio>=2.0.0
+tonic
 
+# ============================================
+# Phase 1 & 2: Neuromorphic / Event-Driven
+# ============================================
 # Spiking Neural Networks
 snntorch>=0.7.0
 spikingjelly>=0.0.0.0.14
 
+# Neuromorphic datasets (Tonic - N-MNIST, DVS-CIFAR, SHD, etc.)
+tonic>=1.0.0
+
 # Liquid Neural Networks
 ncps>=0.0.7
 
+# ============================================
+# Phase 3: HTM / Time Series
+# ============================================
+# Anomaly detection utilities
+pyod>=1.0.0
+scikit-learn>=1.3.0
+
+# ============================================
+# Phase 4: Multi-Modal Fusion
+# ============================================
+# CMU Multimodal SDK (install from git if needed)
+# pip install git+https://github.com/A2Zadeh/CMU-MultimodalSDK.git
+h5py>=3.8.0
+pandas>=2.0.0
+
+# ============================================
+# Phase 5: Active Inference / Offline RL
+# ============================================
 # Active Inference
 inferactively-pymdp>=0.0.7.1
 
+# Offline RL (Minari - replaces D4RL)
+minari>=0.4.0
+gymnasium>=0.29.0
+minigrid>=2.3.0
+
+# ============================================
+# Phase 6: Neuro-Symbolic Reasoning
+# ============================================
+# HuggingFace datasets (bAbI, ProofWriter, FOLIO, etc.)
+datasets>=2.14.0
+Pillow>=10.0.0
+
+# ============================================
+# Phase 7: Meta-Learning / Continual Learning
+# ============================================
+# Meta-learning (Omniglot, mini-ImageNet, tiered-ImageNet)
+learn2learn>=0.2.0
+
+
+# Continual learning benchmarks
+avalanche-lib>=0.4.0
+
+# ============================================
 # Utilities
+# ============================================
 numpy>=1.24.0
 scipy>=1.10.0
 einops>=0.6.0
 matplotlib>=3.7.0
+tqdm>=4.65.0
+requests>=2.31.0
 
 # Experiment tracking
 tensorboard>=2.12.0
@@ -33,6 +84,19 @@ tokenizers>=0.13.0
 pytest>=7.3.0
 pytest-cov>=4.1.0
 
-# Note: htm.core requires building from source
-# git clone https://github.com/htm-community/htm.core.git
-# cd htm.core && pip install -r requirements.txt && python setup.py install
+# ============================================
+# Optional: Build from source
+# ============================================
+# htm.core (HTM algorithms):
+#   git clone https://github.com/htm-community/htm.core.git
+#   cd htm.core && pip install -r requirements.txt && python setup.py install
+#
+# CMU-MultimodalSDK:
+#   pip install git+https://github.com/A2Zadeh/CMU-MultimodalSDK.git
+#
+# MultiBench (multi-modal benchmarks):
+#   git clone https://github.com/pliang279/MultiBench
+#
+# TSB-AD (NeurIPS 2024 anomaly detection):
+#   git clone https://github.com/TheDatumOrg/TSB-AD
+

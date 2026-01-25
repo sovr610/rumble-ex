@@ -41,6 +41,12 @@ from .system import (
     create_control_agent,
 )
 
+# Inference
+from .inference import (
+    BrainInference,
+    InferenceResult,
+)
+
 # Core SNN
 from .core import (
     SNNCore,
@@ -232,4 +238,7 @@ __all__ = [
     'create_neuromodulatory_gate',
     'create_meta_learner',
     'create_eligibility_network',
+    # Inference
+    'BrainInference',
+    'InferenceResult',
 ]
