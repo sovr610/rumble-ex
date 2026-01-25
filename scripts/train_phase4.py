@@ -31,15 +31,67 @@ from brain_ai.workspace.working_memory import WorkingMemory
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Global Workspace")
-    parser.add_argument("--epochs", type=int, default=30, help="Number of epochs")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--workspace-dim", type=int, default=256, help="Workspace dimension")
-    parser.add_argument("--num-modalities", type=int, default=3, help="Number of modalities")
-    parser.add_argument("--seq-length", type=int, default=20, help="Sequence length")
+    parser.add_argument("--mode", type=str, default="dev",
+                        choices=["dev", "production", "production_3b", "production_1b"],
+                        help="Training mode")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of epochs")
+    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
+    parser.add_argument("--workspace-dim", type=int, default=None, help="Workspace dimension")
+    parser.add_argument("--num-modalities", type=int, default=None, help="Number of modalities")
+    parser.add_argument("--seq-length", type=int, default=None, help="Sequence length")
     parser.add_argument("--device", type=str, default="auto", help="Device")
-    parser.add_argument("--save-path", type=str, default="checkpoints/global_workspace.pth", help="Save path")
+    parser.add_argument("--save-path", type=str, default=None, help="Save path")
+    parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
+    parser.add_argument("--compile", action="store_true", help="Use torch.compile")
     return parser.parse_args()
+
+
+def get_mode_config(mode: str) -> dict:
+    """Get configuration based on training mode."""
+    configs = {
+        "dev": {
+            "epochs": 30,
+            "batch_size": 64,
+            "lr": 1e-3,
+            "workspace_dim": 256,
+            "num_modalities": 3,
+            "seq_length": 20,
+            "num_heads": 8,
+            "save_path": "checkpoints/global_workspace_dev.pth",
+        },
+        "production_1b": {
+            "epochs": 60,
+            "batch_size": 64,
+            "lr": 3e-4,
+            "workspace_dim": 1024,
+            "num_modalities": 4,
+            "seq_length": 100,
+            "num_heads": 8,
+            "save_path": "checkpoints/global_workspace_1b.pth",
+        },
+        "production_3b": {
+            "epochs": 100,
+            "batch_size": 32,
+            "lr": 1e-4,
+            "workspace_dim": 2048,
+            "num_modalities": 4,
+            "seq_length": 200,
+            "num_heads": 16,
+            "save_path": "checkpoints/global_workspace_3b.pth",
+        },
+        "production": {  # 7B scale
+            "epochs": 150,
+            "batch_size": 16,
+            "lr": 5e-5,
+            "workspace_dim": 4096,
+            "num_modalities": 4,
+            "seq_length": 500,
+            "num_heads": 32,
+            "save_path": "checkpoints/global_workspace_7b.pth",
+        },
+    }
+    return configs.get(mode, configs["dev"])
 
 
 def get_device(device_arg: str) -> torch.device:
@@ -337,93 +389,142 @@ def evaluate(model, test_loader, device):
 def main():
     args = parse_args()
     device = get_device(args.device)
+    
+    # Get mode-specific configuration
+    mode_config = get_mode_config(args.mode)
+    
+    # Override with command-line arguments if provided
+    epochs = args.epochs or mode_config["epochs"]
+    batch_size = args.batch_size or mode_config["batch_size"]
+    lr = args.lr or mode_config["lr"]
+    workspace_dim = args.workspace_dim or mode_config["workspace_dim"]
+    num_modalities = args.num_modalities or mode_config["num_modalities"]
+    seq_length = args.seq_length or mode_config["seq_length"]
+    save_path = args.save_path or mode_config["save_path"]
+    num_heads = mode_config["num_heads"]
+    
     print(f"Using device: {device}")
+    print(f"Mode: {args.mode}")
+    print(f"  - Epochs: {epochs}")
+    print(f"  - Batch size: {batch_size}")
+    print(f"  - Learning rate: {lr}")
+    print(f"  - Workspace dim: {workspace_dim}")
+    print(f"  - Num modalities: {num_modalities}")
+    print(f"  - Seq length: {seq_length}")
+    print(f"  - Num heads: {num_heads}")
+    
+    # Scale modality_dim based on mode
+    modality_dim = workspace_dim // 2
     
     # Create datasets
-    print("Creating multi-modal sequence datasets...")
+    print("\nCreating multi-modal sequence datasets...")
     train_dataset = MultiModalSequenceDataset(
-        num_samples=5000,
-        num_classes=5,
-        num_modalities=args.num_modalities,
-        modality_dim=128,
-        seq_length=args.seq_length,
+        num_samples=5000 if args.mode == "dev" else 50000,
+        num_classes=5 if args.mode == "dev" else 20,
+        num_modalities=num_modalities,
+        modality_dim=modality_dim,
+        seq_length=seq_length,
         train=True,
     )
     test_dataset = MultiModalSequenceDataset(
-        num_samples=1000,
-        num_classes=5,
-        num_modalities=args.num_modalities,
-        modality_dim=128,
-        seq_length=args.seq_length,
+        num_samples=1000 if args.mode == "dev" else 10000,
+        num_classes=5 if args.mode == "dev" else 20,
+        num_modalities=num_modalities,
+        modality_dim=modality_dim,
+        seq_length=seq_length,
         train=False,
     )
     
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True,
+        train_dataset, batch_size=batch_size, shuffle=True,
         num_workers=4, collate_fn=collate_fn,
     )
     test_loader = DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=False,
+        test_dataset, batch_size=batch_size, shuffle=False,
         num_workers=4, collate_fn=collate_fn,
     )
     
-    # Create model
+    # Create model with mode-specific dimensions
+    num_classes = 5 if args.mode == "dev" else 20
     model = GlobalWorkspaceClassifier(
-        num_modalities=args.num_modalities,
-        modality_dim=128,
-        workspace_dim=args.workspace_dim,
-        num_classes=5,
-        seq_length=args.seq_length,
+        num_modalities=num_modalities,
+        modality_dim=modality_dim,
+        workspace_dim=workspace_dim,
+        num_classes=num_classes,
+        seq_length=seq_length,
     ).to(device)
+    
+    # Compile if requested
+    if args.compile and hasattr(torch, 'compile'):
+        print("Compiling model with torch.compile...")
+        model = torch.compile(model)
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Global Workspace Classifier parameters: {total_params:,}")
     
-    # Training setup
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    # Training setup with mode-specific hyperparameters
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=lr, 
+        weight_decay=0.1 if args.mode == "production" else 1e-4,
+        betas=(0.9, 0.95)
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, epochs, eta_min=lr * 0.01
+    )
     criterion = nn.CrossEntropyLoss()
+    
+    # AMP setup
+    scaler = None
+    if args.use_amp:
+        from torch.cuda.amp import GradScaler
+        scaler = GradScaler()
+        print("Using automatic mixed precision (AMP)")
     
     best_acc = 0.0
     
-    print(f"\nTraining for {args.epochs} epochs...")
+    print(f"\nTraining for {epochs} epochs...")
     print("=" * 60)
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, epochs + 1):
         train_loss, train_acc = train_epoch(
             model, train_loader, optimizer, criterion, device, epoch
         )
         test_acc = evaluate(model, test_loader, device)
         scheduler.step()
         
-        print(f"\nEpoch {epoch}/{args.epochs}")
+        print(f"\nEpoch {epoch}/{epochs}")
         print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
         print(f"  Test Acc: {test_acc:.2f}%")
         
         if test_acc > best_acc:
             best_acc = test_acc
-            save_dir = Path(args.save_path).parent
+            save_dir = Path(save_path).parent
             save_dir.mkdir(parents=True, exist_ok=True)
             torch.save({
                 "epoch": epoch,
+                "mode": args.mode,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "accuracy": test_acc,
-            }, args.save_path)
-            print(f"  New best! Saved to {args.save_path}")
+                "config": mode_config,
+            }, save_path)
+            print(f"  New best! Saved to {save_path}")
         
         print("-" * 60)
     
     print("\n" + "=" * 60)
     print(f"Training complete. Best accuracy: {best_acc:.2f}%")
+    print(f"Mode: {args.mode} | Final checkpoint: {save_path}")
     
-    # Validation gate
-    if best_acc >= 80.0:
-        print("\n[PASS] PHASE 4 VALIDATION PASSED: Achieved 80%+ accuracy")
-    elif best_acc >= 60.0:
-        print("\n[PARTIAL] PHASE 4 PARTIAL: Achieved 60%+ accuracy")
+    # Validation gate (adjusted for mode)
+    target_acc = 80.0 if args.mode == "dev" else 90.0
+    if best_acc >= target_acc:
+        print(f"\n[PASS] PHASE 4 VALIDATION PASSED: Achieved {target_acc}%+ accuracy")
+    elif best_acc >= target_acc - 20:
+        print(f"\n[PARTIAL] PHASE 4 PARTIAL: Achieved {best_acc:.2f}% (target: {target_acc}%)")
     else:
-        print(f"\n[FAIL] PHASE 4 NOT PASSED: {best_acc:.2f}% < 80% target")
+        print(f"\n[FAIL] PHASE 4 NOT PASSED: {best_acc:.2f}% < {target_acc}% target")
 
 
 if __name__ == "__main__":

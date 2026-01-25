@@ -35,15 +35,66 @@ from brain_ai.decision.active_inference import (
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Active Inference Agent")
-    parser.add_argument("--episodes", type=int, default=1000, help="Training episodes (increased for better learning)")
-    parser.add_argument("--max-steps", type=int, default=30, help="Max steps per episode")
-    parser.add_argument("--grid-size", type=int, default=5, help="Grid world size (smaller = easier)")
-    parser.add_argument("--planning-horizon", type=int, default=3, help="Planning horizon")
-    parser.add_argument("--lr", type=float, default=3e-3, help="Learning rate (higher for faster learning)")
-    parser.add_argument("--epistemic-weight", type=float, default=0.5, help="Exploration weight (lower for exploitation)")
+    parser.add_argument("--mode", type=str, default="dev",
+                        choices=["dev", "production", "production_3b", "production_1b"],
+                        help="Training mode")
+    parser.add_argument("--episodes", type=int, default=None, help="Training episodes")
+    parser.add_argument("--max-steps", type=int, default=None, help="Max steps per episode")
+    parser.add_argument("--grid-size", type=int, default=None, help="Grid world size")
+    parser.add_argument("--planning-horizon", type=int, default=None, help="Planning horizon")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
+    parser.add_argument("--epistemic-weight", type=float, default=None, help="Exploration weight")
     parser.add_argument("--device", type=str, default="auto", help="Device")
-    parser.add_argument("--save-path", type=str, default="checkpoints/active_inference.pth", help="Save path")
+    parser.add_argument("--save-path", type=str, default=None, help="Save path")
+    parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
     return parser.parse_args()
+
+
+def get_mode_config(mode: str) -> dict:
+    """Get configuration based on training mode."""
+    configs = {
+        "dev": {
+            "episodes": 1000,
+            "max_steps": 30,
+            "grid_size": 5,
+            "planning_horizon": 3,
+            "lr": 3e-3,
+            "epistemic_weight": 0.5,
+            "hidden_dim": 256,
+            "save_path": "checkpoints/active_inference_dev.pth",
+        },
+        "production_1b": {
+            "episodes": 5000,
+            "max_steps": 100,
+            "grid_size": 10,
+            "planning_horizon": 5,
+            "lr": 1e-3,
+            "epistemic_weight": 0.3,
+            "hidden_dim": 1024,
+            "save_path": "checkpoints/active_inference_1b.pth",
+        },
+        "production_3b": {
+            "episodes": 10000,
+            "max_steps": 200,
+            "grid_size": 15,
+            "planning_horizon": 8,
+            "lr": 5e-4,
+            "epistemic_weight": 0.2,
+            "hidden_dim": 2048,
+            "save_path": "checkpoints/active_inference_3b.pth",
+        },
+        "production": {  # 7B scale
+            "episodes": 20000,
+            "max_steps": 500,
+            "grid_size": 20,
+            "planning_horizon": 10,
+            "lr": 1e-4,
+            "epistemic_weight": 0.1,
+            "hidden_dim": 4096,
+            "save_path": "checkpoints/active_inference_7b.pth",
+        },
+    }
+    return configs.get(mode, configs["dev"])
 
 
 def get_device(device_arg: str) -> torch.device:
@@ -488,37 +539,63 @@ def evaluate(
 def main():
     args = parse_args()
     device = get_device(args.device)
+    
+    # Get mode-specific configuration
+    mode_config = get_mode_config(args.mode)
+    
+    # Override with command-line arguments if provided
+    episodes = args.episodes or mode_config["episodes"]
+    max_steps = args.max_steps or mode_config["max_steps"]
+    grid_size = args.grid_size or mode_config["grid_size"]
+    planning_horizon = args.planning_horizon or mode_config["planning_horizon"]
+    lr = args.lr or mode_config["lr"]
+    epistemic_weight = args.epistemic_weight or mode_config["epistemic_weight"]
+    hidden_dim = mode_config["hidden_dim"]
+    save_path = args.save_path or mode_config["save_path"]
+    
     print(f"Using device: {device}")
+    print(f"Mode: {args.mode}")
+    print(f"  - Episodes: {episodes}")
+    print(f"  - Max steps: {max_steps}")
+    print(f"  - Grid size: {grid_size}")
+    print(f"  - Planning horizon: {planning_horizon}")
+    print(f"  - Learning rate: {lr}")
+    print(f"  - Epistemic weight: {epistemic_weight}")
+    print(f"  - Hidden dim: {hidden_dim}")
     
     # Create environment (smaller grid = easier to learn)
-    grid_size = getattr(args, 'grid_size', 5)
     env = GridWorldEnv(size=grid_size, stochastic=False)  # Deterministic for easier learning
-    print(f"Created GridWorld environment: {env.size}x{env.size} (deterministic)")
+    print(f"\nCreated GridWorld environment: {env.size}x{env.size} (deterministic)")
     
-    # Create agent
+    # Create agent with mode-specific dimensions
     agent = NeuralActiveInferenceAgent(
-        obs_dim=64,
-        state_dim=32,
+        obs_dim=64 if args.mode == "dev" else 256,
+        state_dim=32 if args.mode == "dev" else 128,
         action_dim=5,
-        hidden_dim=128,
-        planning_horizon=args.planning_horizon,
-        epistemic_weight=args.epistemic_weight,
+        hidden_dim=hidden_dim,
+        planning_horizon=planning_horizon,
+        epistemic_weight=epistemic_weight,
     ).to(device)
     
     total_params = sum(p.numel() for p in agent.parameters())
     print(f"Active Inference Agent parameters: {total_params:,}")
     
-    # Optimizer
-    optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
+    # Optimizer with mode-specific settings
+    optimizer = torch.optim.AdamW(
+        agent.parameters(), 
+        lr=lr,
+        weight_decay=0.01 if args.mode != "dev" else 0.0,
+        betas=(0.9, 0.95)
+    )
     
     best_success_rate = 0.0
     
-    print(f"\nTraining for {args.episodes} episodes...")
+    print(f"\nTraining for {episodes} episodes...")
     print("=" * 60)
     
     episode_rewards = []
     
-    for episode in range(1, args.episodes + 1):
+    for episode in range(1, episodes + 1):
         # Train episode
         reward, steps, success = train_episode(
             agent, env, optimizer, device, explore=True
@@ -532,7 +609,7 @@ def main():
                 agent, env, device, num_episodes=30
             )
             
-            print(f"\nEpisode {episode}/{args.episodes}")
+            print(f"\nEpisode {episode}/{episodes}")
             print(f"  Train Avg Reward (last 50): {avg_reward:.2f}")
             print(f"  Eval Avg Reward: {eval_reward:.2f}")
             print(f"  Eval Avg Steps: {eval_steps:.1f}")
@@ -540,15 +617,17 @@ def main():
             
             if eval_success > best_success_rate:
                 best_success_rate = eval_success
-                save_dir = Path(args.save_path).parent
+                save_dir = Path(save_path).parent
                 save_dir.mkdir(parents=True, exist_ok=True)
                 torch.save({
                     "episode": episode,
+                    "mode": args.mode,
                     "model_state_dict": agent.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "success_rate": eval_success,
-                }, args.save_path)
-                print(f"  New best! Saved to {args.save_path}")
+                    "config": mode_config,
+                }, save_path)
+                print(f"  New best! Saved to {save_path}")
             
             print("-" * 60)
     
@@ -563,14 +642,16 @@ def main():
     print(f"  Final Avg Reward: {final_reward:.2f}")
     print(f"  Final Avg Steps: {final_steps:.1f}")
     print(f"  Best Success Rate: {best_success_rate*100:.1f}%")
+    print(f"Mode: {args.mode} | Final checkpoint: {save_path}")
     
-    # Validation gate
-    if final_success >= 0.80:
-        print("\n[PASS] PHASE 5 VALIDATION PASSED: Achieved 80%+ success rate")
-    elif final_success >= 0.50:
-        print("\n[PARTIAL] PHASE 5 PARTIAL: Achieved 50%+ success rate")
+    # Validation gate (adjusted for mode)
+    target_success = 0.80 if args.mode == "dev" else 0.90
+    if final_success >= target_success:
+        print(f"\n[PASS] PHASE 5 VALIDATION PASSED: Achieved {target_success*100}%+ success rate")
+    elif final_success >= target_success - 0.30:
+        print(f"\n[PARTIAL] PHASE 5 PARTIAL: Achieved {final_success*100:.1f}% (target: {target_success*100}%)")
     else:
-        print(f"\n[FAIL] PHASE 5 NOT PASSED: {final_success*100:.1f}% < 80% target")
+        print(f"\n[FAIL] PHASE 5 NOT PASSED: {final_success*100:.1f}% < {target_success*100}% target")
 
 
 if __name__ == "__main__":

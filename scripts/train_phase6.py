@@ -32,14 +32,62 @@ from brain_ai.reasoning.system2 import DualProcessReasoner, System2Config
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Neuro-Symbolic Reasoner")
-    parser.add_argument("--epochs", type=int, default=30, help="Number of epochs")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--reasoning-steps", type=int, default=5, help="Max reasoning steps")
-    parser.add_argument("--hidden-dim", type=int, default=256, help="Hidden dimension")
+    parser.add_argument("--mode", type=str, default="dev",
+                        choices=["dev", "production", "production_3b", "production_1b"],
+                        help="Training mode")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of epochs")
+    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
+    parser.add_argument("--reasoning-steps", type=int, default=None, help="Max reasoning steps")
+    parser.add_argument("--hidden-dim", type=int, default=None, help="Hidden dimension")
     parser.add_argument("--device", type=str, default="auto", help="Device")
-    parser.add_argument("--save-path", type=str, default="checkpoints/neuro_symbolic.pth", help="Save path")
+    parser.add_argument("--save-path", type=str, default=None, help="Save path")
+    parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
+    parser.add_argument("--compile", action="store_true", help="Use torch.compile")
     return parser.parse_args()
+
+
+def get_mode_config(mode: str) -> dict:
+    """Get configuration based on training mode."""
+    configs = {
+        "dev": {
+            "epochs": 30,
+            "batch_size": 64,
+            "lr": 1e-3,
+            "reasoning_steps": 5,
+            "hidden_dim": 256,
+            "num_samples": 5000,
+            "save_path": "checkpoints/neuro_symbolic_dev.pth",
+        },
+        "production_1b": {
+            "epochs": 60,
+            "batch_size": 64,
+            "lr": 3e-4,
+            "reasoning_steps": 10,
+            "hidden_dim": 1024,
+            "num_samples": 50000,
+            "save_path": "checkpoints/neuro_symbolic_1b.pth",
+        },
+        "production_3b": {
+            "epochs": 100,
+            "batch_size": 32,
+            "lr": 1e-4,
+            "reasoning_steps": 12,
+            "hidden_dim": 2048,
+            "num_samples": 100000,
+            "save_path": "checkpoints/neuro_symbolic_3b.pth",
+        },
+        "production": {  # 7B scale
+            "epochs": 150,
+            "batch_size": 16,
+            "lr": 5e-5,
+            "reasoning_steps": 16,
+            "hidden_dim": 4096,
+            "num_samples": 500000,
+            "save_path": "checkpoints/neuro_symbolic_7b.pth",
+        },
+    }
+    return configs.get(mode, configs["dev"])
 
 
 def get_device(device_arg: str) -> torch.device:
@@ -520,59 +568,101 @@ def evaluate(model, test_loader, device) -> Dict[str, float]:
 def main():
     args = parse_args()
     device = get_device(args.device)
+    
+    # Get mode-specific configuration
+    mode_config = get_mode_config(args.mode)
+    
+    # Override with command-line arguments if provided
+    epochs = args.epochs or mode_config["epochs"]
+    batch_size = args.batch_size or mode_config["batch_size"]
+    lr = args.lr or mode_config["lr"]
+    reasoning_steps = args.reasoning_steps or mode_config["reasoning_steps"]
+    hidden_dim = args.hidden_dim or mode_config["hidden_dim"]
+    num_samples = mode_config["num_samples"]
+    save_path = args.save_path or mode_config["save_path"]
+    
     print(f"Using device: {device}")
+    print(f"Mode: {args.mode}")
+    print(f"  - Epochs: {epochs}")
+    print(f"  - Batch size: {batch_size}")
+    print(f"  - Learning rate: {lr}")
+    print(f"  - Reasoning steps: {reasoning_steps}")
+    print(f"  - Hidden dim: {hidden_dim}")
+    print(f"  - Num samples: {num_samples}")
+    
+    # Scale input_dim based on mode
+    input_dim = hidden_dim // 2
     
     # Create datasets
-    print("Creating logical reasoning datasets...")
+    print("\nCreating logical reasoning datasets...")
     train_dataset = LogicalReasoningDataset(
-        num_samples=10000,
-        input_dim=128,
-        max_steps=args.reasoning_steps,
+        num_samples=num_samples,
+        input_dim=input_dim,
+        max_steps=reasoning_steps,
         train=True,
     )
     test_dataset = LogicalReasoningDataset(
-        num_samples=2000,
-        input_dim=128,
-        max_steps=args.reasoning_steps,
+        num_samples=num_samples // 5,
+        input_dim=input_dim,
+        max_steps=reasoning_steps,
         train=False,
     )
     
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=4
     )
     test_loader = DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4
+        test_dataset, batch_size=batch_size, shuffle=False, num_workers=4
     )
     
-    # Create model
+    # Create model with mode-specific dimensions
     model = NeuroSymbolicClassifier(
-        input_dim=128,
-        hidden_dim=args.hidden_dim,
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
         num_classes=2,
-        num_reasoning_steps=args.reasoning_steps,
+        num_reasoning_steps=reasoning_steps,
     ).to(device)
+    
+    # Compile if requested
+    if args.compile and hasattr(torch, 'compile'):
+        print("Compiling model with torch.compile...")
+        model = torch.compile(model)
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Neuro-Symbolic Classifier parameters: {total_params:,}")
     
-    # Training setup
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    # Training setup with mode-specific hyperparameters
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=lr, 
+        weight_decay=0.1 if args.mode == "production" else 1e-4,
+        betas=(0.9, 0.95)
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, epochs, eta_min=lr * 0.01
+    )
     criterion = nn.CrossEntropyLoss()
+    
+    # AMP setup
+    scaler = None
+    if args.use_amp:
+        from torch.cuda.amp import GradScaler
+        scaler = GradScaler()
+        print("Using automatic mixed precision (AMP)")
     
     best_acc = 0.0
     
-    print(f"\nTraining for {args.epochs} epochs...")
+    print(f"\nTraining for {epochs} epochs...")
     print("=" * 60)
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, epochs + 1):
         train_loss, train_acc, s2_usage = train_epoch(
             model, train_loader, optimizer, criterion, device, epoch
         )
         metrics = evaluate(model, test_loader, device)
         scheduler.step()
         
-        print(f"\nEpoch {epoch}/{args.epochs}")
+        print(f"\nEpoch {epoch}/{epochs}")
         print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
         print(f"  Test Accuracy: {metrics['accuracy']:.2f}%")
         print(f"  System 1 Acc: {metrics['s1_accuracy']:.2f}% (usage: {metrics['s1_usage']:.1f}%)")
@@ -582,28 +672,32 @@ def main():
         
         if metrics['accuracy'] > best_acc:
             best_acc = metrics['accuracy']
-            save_dir = Path(args.save_path).parent
+            save_dir = Path(save_path).parent
             save_dir.mkdir(parents=True, exist_ok=True)
             torch.save({
                 "epoch": epoch,
+                "mode": args.mode,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "metrics": metrics,
-            }, args.save_path)
-            print(f"  New best! Saved to {args.save_path}")
+                "config": mode_config,
+            }, save_path)
+            print(f"  New best! Saved to {save_path}")
         
         print("-" * 60)
     
     print("\n" + "=" * 60)
     print(f"Training complete. Best accuracy: {best_acc:.2f}%")
+    print(f"Mode: {args.mode} | Final checkpoint: {save_path}")
     
-    # Validation gate
-    if best_acc >= 85.0:
-        print("\n[PASS] PHASE 6 VALIDATION PASSED: Achieved 85%+ accuracy")
-    elif best_acc >= 70.0:
-        print("\n[PARTIAL] PHASE 6 PARTIAL: Achieved 70%+ accuracy")
+    # Validation gate (adjusted for mode)
+    target_acc = 85.0 if args.mode == "dev" else 92.0
+    if best_acc >= target_acc:
+        print(f"\n[PASS] PHASE 6 VALIDATION PASSED: Achieved {target_acc}%+ accuracy")
+    elif best_acc >= target_acc - 15:
+        print(f"\n[PARTIAL] PHASE 6 PARTIAL: Achieved {best_acc:.2f}% (target: {target_acc}%)")
     else:
-        print(f"\n[FAIL] PHASE 6 NOT PASSED: {best_acc:.2f}% < 85% target")
+        print(f"\n[FAIL] PHASE 6 NOT PASSED: {best_acc:.2f}% < {target_acc}% target")
 
 
 if __name__ == "__main__":

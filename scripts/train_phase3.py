@@ -29,15 +29,62 @@ from brain_ai.temporal.htm import HTMLayer, HTMConfig
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train HTM on Sequence Prediction")
-    parser.add_argument("--sequences", type=int, default=200, help="Number of training sequences")
-    parser.add_argument("--epochs", type=int, default=5, help="Training epochs (passes over data)")
-    parser.add_argument("--seq-length", type=int, default=30, help="Sequence length")
-    parser.add_argument("--column-count", type=int, default=256, help="HTM column count (reduced for memory)")
-    parser.add_argument("--cells-per-column", type=int, default=8, help="Cells per column (reduced for memory)")
-    parser.add_argument("--input-dim", type=int, default=128, help="Input dimension (reduced for memory)")
+    parser.add_argument("--mode", type=str, default="dev",
+                        choices=["dev", "production", "production_3b", "production_1b"],
+                        help="Training mode")
+    parser.add_argument("--sequences", type=int, default=None, help="Number of training sequences")
+    parser.add_argument("--epochs", type=int, default=None, help="Training epochs")
+    parser.add_argument("--seq-length", type=int, default=None, help="Sequence length")
+    parser.add_argument("--column-count", type=int, default=None, help="HTM column count")
+    parser.add_argument("--cells-per-column", type=int, default=None, help="Cells per column")
+    parser.add_argument("--input-dim", type=int, default=None, help="Input dimension")
     parser.add_argument("--device", type=str, default="auto", help="Device")
-    parser.add_argument("--save-path", type=str, default="checkpoints/htm_layer.pth", help="Save path")
+    parser.add_argument("--save-path", type=str, default=None, help="Save path")
+    parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
     return parser.parse_args()
+
+
+def get_mode_config(mode: str) -> dict:
+    """Get configuration based on training mode."""
+    configs = {
+        "dev": {
+            "sequences": 200,
+            "epochs": 5,
+            "seq_length": 30,
+            "column_count": 256,
+            "cells_per_column": 8,
+            "input_dim": 128,
+            "save_path": "checkpoints/htm_layer_dev.pth",
+        },
+        "production_1b": {
+            "sequences": 5000,
+            "epochs": 20,
+            "seq_length": 100,
+            "column_count": 4096,
+            "cells_per_column": 32,
+            "input_dim": 2048,
+            "save_path": "checkpoints/htm_layer_1b.pth",
+        },
+        "production_3b": {
+            "sequences": 10000,
+            "epochs": 30,
+            "seq_length": 200,
+            "column_count": 8192,
+            "cells_per_column": 48,
+            "input_dim": 3072,
+            "save_path": "checkpoints/htm_layer_3b.pth",
+        },
+        "production": {  # 7B scale
+            "sequences": 50000,
+            "epochs": 50,
+            "seq_length": 500,
+            "column_count": 16384,
+            "cells_per_column": 64,
+            "input_dim": 4096,
+            "save_path": "checkpoints/htm_layer_7b.pth",
+        },
+    }
+    return configs.get(mode, configs["dev"])
 
 
 def get_device(device_arg: str) -> torch.device:
@@ -269,14 +316,34 @@ def test_anomaly_detection(
 def main():
     args = parse_args()
     device = get_device(args.device)
+    
+    # Get mode-specific configuration
+    mode_config = get_mode_config(args.mode)
+    
+    # Override with command-line arguments if provided
+    sequences = args.sequences or mode_config["sequences"]
+    epochs = args.epochs or mode_config["epochs"]
+    seq_length = args.seq_length or mode_config["seq_length"]
+    column_count = args.column_count or mode_config["column_count"]
+    cells_per_column = args.cells_per_column or mode_config["cells_per_column"]
+    input_dim = args.input_dim or mode_config["input_dim"]
+    save_path = args.save_path or mode_config["save_path"]
+    
     print(f"Using device: {device}")
+    print(f"Mode: {args.mode}")
+    print(f"  - Sequences: {sequences}")
+    print(f"  - Epochs: {epochs}")
+    print(f"  - Seq length: {seq_length}")
+    print(f"  - Column count: {column_count}")
+    print(f"  - Cells per column: {cells_per_column}")
+    print(f"  - Input dim: {input_dim}")
     
     # Generate data
-    print(f"Generating {args.sequences} synthetic sequences...")
+    print(f"\nGenerating {sequences} synthetic sequences...")
     all_sequences = generate_synthetic_sequences(
-        args.sequences,
-        args.seq_length,
-        input_dim=args.input_dim,
+        sequences,
+        seq_length,
+        input_dim=input_dim,
     )
     
     # Split train/test
@@ -286,26 +353,26 @@ def main():
     
     print(f"Train: {len(train_sequences)}, Test: {len(test_sequences)}")
     
-    # Create HTM layer with memory-conscious parameters
+    # Create HTM layer with mode-specific parameters
     config = HTMConfig(
-        input_size=args.input_dim,
-        column_count=args.column_count,
-        cells_per_column=args.cells_per_column,
+        input_size=input_dim,
+        column_count=column_count,
+        cells_per_column=cells_per_column,
         sparsity=0.02,
-        activation_threshold=3,  # Lower threshold for smaller model
-        min_threshold=2,
+        activation_threshold=min(13, column_count // 20),
+        min_threshold=min(8, column_count // 30),
     )
     
     htm = HTMLayer(config).to(device)
     total_cells = config.column_count * config.cells_per_column
-    print(f"Created HTM Layer: {config.column_count} columns × {config.cells_per_column} cells = {total_cells} total cells")
+    print(f"Created HTM Layer: {config.column_count} columns × {config.cells_per_column} cells = {total_cells:,} total cells")
     
     best_acc = 0.0
     
-    print(f"\nTraining for {args.epochs} epochs...")
+    print(f"\nTraining for {epochs} epochs...")
     print("=" * 60)
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, epochs + 1):
         # Train (HTM learns online during forward pass)
         train_acc, train_anomaly = train_htm_epoch(
             htm, train_sequences, device, epoch
@@ -317,36 +384,39 @@ def main():
         # Test anomaly detection
         detection_rate = test_anomaly_detection(htm, test_sequences, device)
         
-        print(f"\nEpoch {epoch}/{args.epochs}")
+        print(f"\nEpoch {epoch}/{epochs}")
         print(f"  Train Prediction Accuracy: {train_acc*100:.2f}%")
         print(f"  Test Prediction Accuracy: {test_acc*100:.2f}%")
         print(f"  Anomaly Detection Rate: {detection_rate*100:.2f}%")
         
         if test_acc > best_acc:
             best_acc = test_acc
-            save_dir = Path(args.save_path).parent
+            save_dir = Path(save_path).parent
             save_dir.mkdir(parents=True, exist_ok=True)
             torch.save({
                 "epoch": epoch,
+                "mode": args.mode,
                 "model_state_dict": htm.state_dict(),
                 "config": config,
                 "accuracy": test_acc,
                 "detection_rate": detection_rate,
-            }, args.save_path)
-            print(f"  New best! Saved to {args.save_path}")
+            }, save_path)
+            print(f"  New best! Saved to {save_path}")
         
         print("-" * 60)
     
     print("\n" + "=" * 60)
     print(f"Training complete. Best prediction accuracy: {best_acc*100:.2f}%")
+    print(f"Mode: {args.mode} | Final checkpoint: {save_path}")
     
-    # Validation gate
-    if best_acc >= 0.90:
-        print("\n[PASS] PHASE 3 VALIDATION PASSED: Achieved 90%+ prediction accuracy")
-    elif best_acc >= 0.70:
-        print("\n[PARTIAL] PHASE 3 PARTIAL: Achieved 70%+ prediction accuracy")
+    # Validation gate (adjusted for mode)
+    target_acc = 0.90 if args.mode == "dev" else 0.95
+    if best_acc >= target_acc:
+        print(f"\n[PASS] PHASE 3 VALIDATION PASSED: Achieved {target_acc*100}%+ prediction accuracy")
+    elif best_acc >= target_acc - 0.20:
+        print(f"\n[PARTIAL] PHASE 3 PARTIAL: Achieved {best_acc*100:.2f}% (target: {target_acc*100}%)")
     else:
-        print(f"\n[FAIL] PHASE 3 NOT PASSED: {best_acc*100:.2f}% < 90% target")
+        print(f"\n[FAIL] PHASE 3 NOT PASSED: {best_acc*100:.2f}% < {target_acc*100}% target")
 
 
 if __name__ == "__main__":

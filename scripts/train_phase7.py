@@ -34,18 +34,81 @@ from brain_ai.meta.eligibility import EligibilityTrace
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Meta-Learning System")
-    parser.add_argument("--meta-epochs", type=int, default=100, help="Meta-training epochs")
-    parser.add_argument("--tasks-per-batch", type=int, default=4, help="Tasks per meta-batch")
-    parser.add_argument("--n-way", type=int, default=5, help="N-way classification")
-    parser.add_argument("--k-shot", type=int, default=1, help="K-shot (support examples)")
-    parser.add_argument("--q-query", type=int, default=15, help="Query examples per class")
-    parser.add_argument("--inner-lr", type=float, default=0.1, help="Inner loop learning rate (higher for fast adaptation)")
-    parser.add_argument("--outer-lr", type=float, default=0.001, help="Outer loop learning rate")
-    parser.add_argument("--inner-steps", type=int, default=10, help="Inner loop gradient steps (more for better adaptation)")
+    parser.add_argument("--mode", type=str, default="dev",
+                        choices=["dev", "production", "production_3b", "production_1b"],
+                        help="Training mode")
+    parser.add_argument("--meta-epochs", type=int, default=None, help="Meta-training epochs")
+    parser.add_argument("--tasks-per-batch", type=int, default=None, help="Tasks per meta-batch")
+    parser.add_argument("--n-way", type=int, default=None, help="N-way classification")
+    parser.add_argument("--k-shot", type=int, default=None, help="K-shot (support examples)")
+    parser.add_argument("--q-query", type=int, default=None, help="Query examples per class")
+    parser.add_argument("--inner-lr", type=float, default=None, help="Inner loop learning rate")
+    parser.add_argument("--outer-lr", type=float, default=None, help="Outer loop learning rate")
+    parser.add_argument("--inner-steps", type=int, default=None, help="Inner loop gradient steps")
     parser.add_argument("--first-order", action="store_true", help="Use first-order MAML")
     parser.add_argument("--device", type=str, default="auto", help="Device")
-    parser.add_argument("--save-path", type=str, default="checkpoints/meta_learning.pth", help="Save path")
+    parser.add_argument("--save-path", type=str, default=None, help="Save path")
+    parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
     return parser.parse_args()
+
+
+def get_mode_config(mode: str) -> dict:
+    """Get configuration based on training mode."""
+    configs = {
+        "dev": {
+            "meta_epochs": 100,
+            "tasks_per_batch": 4,
+            "n_way": 5,
+            "k_shot": 1,
+            "q_query": 15,
+            "inner_lr": 0.1,
+            "outer_lr": 0.001,
+            "inner_steps": 10,
+            "feature_dim": 64,
+            "hidden_dim": 128,
+            "save_path": "checkpoints/meta_learning_dev.pth",
+        },
+        "production_1b": {
+            "meta_epochs": 500,
+            "tasks_per_batch": 8,
+            "n_way": 5,
+            "k_shot": 5,
+            "q_query": 15,
+            "inner_lr": 0.05,
+            "outer_lr": 0.0005,
+            "inner_steps": 15,
+            "feature_dim": 256,
+            "hidden_dim": 512,
+            "save_path": "checkpoints/meta_learning_1b.pth",
+        },
+        "production_3b": {
+            "meta_epochs": 1000,
+            "tasks_per_batch": 16,
+            "n_way": 10,
+            "k_shot": 5,
+            "q_query": 15,
+            "inner_lr": 0.01,
+            "outer_lr": 0.0001,
+            "inner_steps": 20,
+            "feature_dim": 512,
+            "hidden_dim": 1024,
+            "save_path": "checkpoints/meta_learning_3b.pth",
+        },
+        "production": {  # 7B scale
+            "meta_epochs": 2000,
+            "tasks_per_batch": 32,
+            "n_way": 20,
+            "k_shot": 5,
+            "q_query": 15,
+            "inner_lr": 0.001,
+            "outer_lr": 0.0001,
+            "inner_steps": 30,
+            "feature_dim": 1024,
+            "hidden_dim": 2048,
+            "save_path": "checkpoints/meta_learning_7b.pth",
+        },
+    }
+    return configs.get(mode, configs["dev"])
 
 
 def get_device(device_arg: str) -> torch.device:
@@ -412,69 +475,111 @@ def test_adaptation_speed(
 
 def main():
     args = parse_args()
+    mode_config = get_mode_config(args.mode)
     device = get_device(args.device)
+    
     print(f"Using device: {device}")
+    print(f"Training mode: {args.mode}")
+    print(f"Mode config: {mode_config}")
+    
+    # Override with CLI args if provided
+    meta_epochs = args.meta_epochs or mode_config["meta_epochs"]
+    tasks_per_batch = args.tasks_per_batch or mode_config["tasks_per_batch"]
+    n_way = args.n_way or mode_config["n_way"]
+    k_shot = args.k_shot or mode_config["k_shot"]
+    q_query = args.q_query or mode_config["q_query"]
+    outer_lr = args.outer_lr or mode_config["outer_lr"]
+    inner_lr = args.inner_lr or mode_config["inner_lr"]
+    inner_steps = args.inner_steps or mode_config["inner_steps"]
+    hidden_dim = mode_config["hidden_dim"]
+    num_classes = mode_config["num_classes"]
+    feature_dim = mode_config["feature_dim"]
+    weight_decay = mode_config["weight_decay"]
+    first_order = args.first_order  # Boolean flag, use directly
+    
+    # Use AMP for production modes
+    use_amp = args.mode in ["production", "production_3b", "production_1b"]
+    scaler = torch.amp.GradScaler("cuda") if use_amp and device.type == "cuda" else None
     
     # Create task generators
-    print(f"Setting up {args.n_way}-way {args.k_shot}-shot learning...")
+    print(f"\nSetting up {n_way}-way {k_shot}-shot learning...")
     train_generator = SyntheticFewShotDataset(
-        num_classes=100,
-        feature_dim=64,
-        n_way=args.n_way,
-        k_shot=args.k_shot,
-        q_query=args.q_query,
+        num_classes=num_classes,
+        feature_dim=feature_dim,
+        n_way=n_way,
+        k_shot=k_shot,
+        q_query=q_query,
         seed=42,
     )
     test_generator = SyntheticFewShotDataset(
-        num_classes=100,
-        feature_dim=64,
-        n_way=args.n_way,
-        k_shot=args.k_shot,
-        q_query=args.q_query,
+        num_classes=num_classes,
+        feature_dim=feature_dim,
+        n_way=n_way,
+        k_shot=k_shot,
+        q_query=q_query,
         seed=123,
     )
     
-    # Create meta-learner
+    # Create meta-learner with mode-specific dimensions
     meta_learner = MetaLearner(
-        input_dim=64,
-        hidden_dim=64,
-        n_way=args.n_way,
-        inner_lr=args.inner_lr,
-        inner_steps=args.inner_steps,
-        first_order=args.first_order,
+        input_dim=feature_dim,
+        hidden_dim=hidden_dim,
+        n_way=n_way,
+        inner_lr=inner_lr,
+        inner_steps=inner_steps,
+        first_order=first_order,
     ).to(device)
     
-    total_params = sum(p.numel() for p in meta_learner.parameters())
-    print(f"Meta-Learner parameters: {total_params:,}")
-    print(f"MAML mode: {'First-order' if args.first_order else 'Second-order'}")
+    # Compile for production modes
+    if args.mode in ["production", "production_3b"] and hasattr(torch, "compile"):
+        try:
+            meta_learner = torch.compile(meta_learner, mode="reduce-overhead")
+            print("Model compiled with torch.compile")
+        except Exception as e:
+            print(f"Could not compile model: {e}")
     
-    # Optimizer (outer loop)
-    optimizer = torch.optim.Adam(meta_learner.parameters(), lr=args.outer_lr)
+    total_params = sum(p.numel() for p in meta_learner.parameters())
+    trainable_params = sum(p.numel() for p in meta_learner.parameters() if p.requires_grad)
+    print(f"\nMeta-Learner parameters: {total_params:,} (trainable: {trainable_params:,})")
+    print(f"MAML mode: {'First-order' if first_order else 'Second-order'}")
+    
+    # Optimizer (outer loop) with mode-specific settings
+    optimizer = torch.optim.AdamW(
+        meta_learner.parameters(),
+        lr=outer_lr,
+        weight_decay=weight_decay,
+        betas=(0.9, 0.95) if args.mode == "production" else (0.9, 0.999),
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, args.meta_epochs
+        optimizer,
+        T_max=meta_epochs,
+        eta_min=outer_lr * 0.01,
     )
     
     best_acc = 0.0
-    batches_per_epoch = 50
+    batches_per_epoch = 100 if args.mode == "production" else 50
     
-    print(f"\nMeta-training for {args.meta_epochs} epochs...")
+    print(f"\nMeta-training for {meta_epochs} epochs...")
+    print(f"Tasks per batch: {tasks_per_batch}, Batches per epoch: {batches_per_epoch}")
     print("=" * 60)
     
-    for epoch in range(1, args.meta_epochs + 1):
+    for epoch in range(1, meta_epochs + 1):
         train_loss, train_acc = train_meta_epoch(
             meta_learner, train_generator, optimizer, device,
-            args.tasks_per_batch, batches_per_epoch, epoch
+            tasks_per_batch, batches_per_epoch, epoch
         )
         scheduler.step()
         
-        # Evaluate every 10 epochs
-        if epoch % 10 == 0 or epoch == args.meta_epochs:
+        # Evaluate periodically
+        eval_interval = 20 if args.mode == "production" else 10
+        if epoch % eval_interval == 0 or epoch == meta_epochs:
             metrics = evaluate_few_shot(meta_learner, test_generator, device)
             
-            print(f"\nEpoch {epoch}/{args.meta_epochs}")
+            print(f"\nEpoch {epoch}/{meta_epochs}")
             print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc*100:.2f}%")
-            print(f"  Test {args.n_way}-way {args.k_shot}-shot Accuracy: "
+            print(f"  Test {n_way}-way {k_shot}-shot Accuracy: "
                   f"{metrics['mean_accuracy']:.2f}% ± {metrics['std_accuracy']:.2f}%")
+            print(f"  LR: {scheduler.get_last_lr()[0]:.2e}")
             
             if metrics['mean_accuracy'] > best_acc:
                 best_acc = metrics['mean_accuracy']
@@ -484,7 +589,10 @@ def main():
                     "epoch": epoch,
                     "model_state_dict": meta_learner.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
                     "metrics": metrics,
+                    "mode": args.mode,
+                    "config": mode_config,
                 }, args.save_path)
                 print(f"  New best! Saved to {args.save_path}")
             
@@ -497,15 +605,23 @@ def main():
     for i, acc in enumerate(step_accs):
         print(f"  {i+1} step(s): {acc:.2f}%")
     
-    print(f"\nTraining complete. Best {args.n_way}-way {args.k_shot}-shot accuracy: {best_acc:.2f}%")
+    print(f"\nTraining complete. Best {n_way}-way {k_shot}-shot accuracy: {best_acc:.2f}%")
+    
+    # Mode-dependent validation thresholds
+    if args.mode == "production":
+        pass_threshold, partial_threshold = 85.0, 70.0
+    elif args.mode in ["production_3b", "production_1b"]:
+        pass_threshold, partial_threshold = 82.0, 65.0
+    else:
+        pass_threshold, partial_threshold = 80.0, 60.0
     
     # Validation gate
-    if best_acc >= 80.0:
-        print(f"\n[PASS] PHASE 7 VALIDATION PASSED: Achieved 80%+ few-shot accuracy")
-    elif best_acc >= 60.0:
-        print(f"\n[PARTIAL] PHASE 7 PARTIAL: Achieved 60%+ few-shot accuracy")
+    if best_acc >= pass_threshold:
+        print(f"\n[PASS] PHASE 7 VALIDATION PASSED: Achieved {pass_threshold}%+ few-shot accuracy")
+    elif best_acc >= partial_threshold:
+        print(f"\n[PARTIAL] PHASE 7 PARTIAL: Achieved {partial_threshold}%+ few-shot accuracy")
     else:
-        print(f"\n[FAIL] PHASE 7 NOT PASSED: {best_acc:.2f}% < 80% target")
+        print(f"\n[FAIL] PHASE 7 NOT PASSED: {best_acc:.2f}% < {pass_threshold}% target")
 
 
 if __name__ == "__main__":
