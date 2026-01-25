@@ -244,13 +244,26 @@ def demo_internal_states(brain):
     # Workspace state
     print(f"\n   Workspace state shape: {result.workspace_state.shape if result.workspace_state is not None else 'None'}")
     
-    # Attention weights
+    # Attention weights (can be a dict of tensors or a single tensor)
     if result.attention_weights is not None:
-        print(f"   Attention weights shape: {result.attention_weights.shape}")
-        print(f"   Max attention: {result.attention_weights.max().item():.4f}")
+        if isinstance(result.attention_weights, dict):
+            print(f"   Attention weights: {len(result.attention_weights)} modalities")
+            for modality, weights in result.attention_weights.items():
+                if hasattr(weights, 'shape'):
+                    print(f"      {modality}: shape={weights.shape}, max={weights.max().item():.4f}")
+                else:
+                    print(f"      {modality}: {type(weights).__name__}")
+        elif hasattr(result.attention_weights, 'shape'):
+            print(f"   Attention weights shape: {result.attention_weights.shape}")
+            print(f"   Max attention: {result.attention_weights.max().item():.4f}")
+    else:
+        print("   Attention weights: None")
     
     # Anomaly score (from HTM)
-    print(f"   Anomaly score: {result.anomaly_score:.4f}")
+    if result.anomaly_score is not None:
+        print(f"   Anomaly score: {result.anomaly_score:.4f}")
+    else:
+        print("   Anomaly score: None")
     
     # Reasoning trace
     if result.reasoning_used:
