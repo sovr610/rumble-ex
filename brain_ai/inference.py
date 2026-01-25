@@ -162,21 +162,27 @@ class BrainInference:
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         
         # Extract config
-        if 'config' in checkpoint:
-            config = checkpoint['config']
-            if isinstance(config, dict):
-                model_config = BrainAIConfig(**config)
-            else:
-                model_config = config
-        else:
-            # Use defaults
-            model_config = BrainAIConfig()
+        config = checkpoint.get('config', {})
+        if not isinstance(config, dict):
+            config = {}
+        
+        # Separate BrainAI-level params from BrainAIConfig params
+        modalities = config.pop('modalities', ['vision'])
+        output_type = config.pop('output_type', 'classify')
+        num_classes = config.pop('num_classes', 10)
+        
+        # Build BrainAIConfig only with valid fields
+        # For simplicity, use defaults - the weights will override
+        model_config = BrainAIConfig()
+        model_config.modalities = modalities
+        if num_classes:
+            model_config.decision.num_classes = num_classes
             
         # Create model
         model = BrainAI(
             config=model_config,
-            modalities=config.get('modalities', ['vision']),
-            output_type=config.get('output_type', 'classify'),
+            modalities=modalities,
+            output_type=output_type,
         )
         
         # Load weights
@@ -195,7 +201,7 @@ class BrainInference:
         
         return cls(
             model=model,
-            config=config if isinstance(config, dict) else {},
+            config={'modalities': modalities, 'output_type': output_type, 'num_classes': num_classes},
             device=device,
             class_names=class_names,
         )
