@@ -90,7 +90,7 @@ def demo_direct_inference(model):
     
     print("\n🔮 Running forward pass...")
     with torch.no_grad():
-        output = model(vision=vision_input)
+        output = model({'vision': vision_input}, return_details=True)
     
     print(f"   Output shape: {output.output.shape}")
     print(f"   Workspace shape: {output.workspace.shape}")
@@ -98,7 +98,7 @@ def demo_direct_inference(model):
     
     # Classification
     print("\n📊 Classification...")
-    logits = model.classify(vision=vision_input)
+    logits = model.classify({'vision': vision_input})
     predictions = torch.argmax(logits, dim=-1)
     print(f"   Predictions: {predictions.numpy()}")
 
