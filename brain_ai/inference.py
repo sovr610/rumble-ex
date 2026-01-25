@@ -120,6 +120,11 @@ class BrainInference:
         self._vision_transform = None
         self._text_tokenizer = None
         self._audio_processor = None
+    
+    def reset(self):
+        """Reset all stateful components in the model."""
+        if hasattr(self.model, 'reset_state'):
+            self.model.reset_state()
         
     @staticmethod
     def _resolve_device(device: str) -> torch.device:
