@@ -17,7 +17,10 @@ pip install -r requirements.txt
 pip install tonic spikingjelly snntorch
 
 # Install meta-learning libraries
-pip install learn2learn torchmeta higher
+# NOTE: torchmeta is incompatible with PyTorch 2.x (requires torch < 1.10)
+# NOTE: learn2learn has Cython issues on Python 3.12+
+# The project uses custom MAML implementation in brain_ai/meta/maml.py
+pip install higher
 
 # Install offline RL libraries
 pip install minari gymnasium minigrid

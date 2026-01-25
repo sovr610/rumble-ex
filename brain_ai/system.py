@@ -123,6 +123,7 @@ class BrainAI(nn.Module):
 
         if 'sensors' in self.modalities:
             self.encoders['sensors'] = create_sensor_encoder(
+                input_dim=self.config.encoder.sensor_input_dim,
                 output_dim=encoder_dim,
                 hidden_dim=self.config.encoder.sensor_hidden_dim,
             )
@@ -455,6 +456,15 @@ def create_brain_ai(
     for key, value in kwargs.items():
         if hasattr(config, key):
             setattr(config, key, value)
+        # Handle nested config attributes
+        elif key == 'sensor_input_dim':
+            config.encoder.sensor_input_dim = value
+        elif key == 'hidden_dim':
+            config.snn.hidden_sizes = [value, value // 2]
+        elif key == 'snn_steps':
+            config.snn.num_timesteps = value
+        elif key == 'htm_columns':
+            config.htm.column_count = value
 
     # Create model
     model = BrainAI(
@@ -499,15 +509,33 @@ def create_multimodal_system(
 
 
 def create_control_agent(
+    state_dim: int = 32,
+    action_dim: int = 6,
     modalities: List[str] = ['sensors'],
-    control_dim: int = 6,
+    control_dim: int = None,
     **kwargs,
 ) -> BrainAI:
-    """Create continuous control agent."""
+    """Create continuous control agent.
+    
+    Args:
+        state_dim: Dimension of state/observation input
+        action_dim: Dimension of action output
+        modalities: Input modalities (default: ['sensors'])
+        control_dim: Alias for action_dim (deprecated, use action_dim)
+        **kwargs: Additional arguments passed to create_brain_ai
+    """
+    # Handle backwards compatibility
+    if control_dim is not None:
+        action_dim = control_dim
+    
+    # Set sensor input dim to match state_dim
+    if 'sensor_input_dim' not in kwargs:
+        kwargs['sensor_input_dim'] = state_dim
+    
     return create_brain_ai(
         modalities=modalities,
         output_type='control',
-        control_dim=control_dim,
+        control_dim=action_dim,
         use_meta=True,
         **kwargs,
     )

@@ -39,6 +39,7 @@ class EncoderConfig:
     audio_channels: list[int] = field(default_factory=lambda: [128, 256])
 
     # Sensors
+    sensor_input_dim: int = 32  # Default sensor input channels
     sensor_hidden_dim: int = 256
 
 
