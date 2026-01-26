@@ -460,6 +460,15 @@ def main():
     
     log_memory("before HTM creation")
     
+    # Estimate memory usage before creating HTM
+    sp_memory_mb = (column_count * input_dim * 4 * 2) / (1024 ** 2)  # permanences + potential_mask
+    cell_states_mb = (column_count * cells_per_column * 4 * 5) / (1024 ** 2)  # 5 state tensors
+    print(f"\nEstimated HTM memory (sparse TM):")
+    print(f"  - Spatial Pooler: ~{sp_memory_mb:.1f} MB")
+    print(f"  - Cell states: ~{cell_states_mb:.1f} MB")
+    print(f"  - Temporal Memory segments: grows with learning (sparse)")
+    print(f"  - Total initial: ~{sp_memory_mb + cell_states_mb:.1f} MB")
+    
     # Create HTM layer with mode-specific parameters
     config = HTMConfig(
         input_size=input_dim,

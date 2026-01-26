@@ -242,10 +242,13 @@ class PytorchSpatialPooler(nn.Module):
 
 class PytorchTemporalMemory(nn.Module):
     """
-    Temporal Memory in pure PyTorch.
+    Temporal Memory in pure PyTorch with SPARSE segment storage.
 
     Learns sequences by forming connections between cells in different columns.
     Cells in a column represent different contexts for the same input pattern.
+    
+    Uses sparse representation to handle large cell counts efficiently.
+    Memory scales with actual connections, not O(num_cells^2).
     """
 
     def __init__(
@@ -259,6 +262,8 @@ class PytorchTemporalMemory(nn.Module):
         permanence_connected: float = 0.5,
         permanence_inc: float = 0.1,
         permanence_dec: float = 0.1,
+        max_segments_per_cell: int = 128,
+        max_synapses_per_segment: int = 32,
     ):
         super().__init__()
 
@@ -272,19 +277,14 @@ class PytorchTemporalMemory(nn.Module):
         self.permanence_connected = permanence_connected
         self.permanence_inc = permanence_inc
         self.permanence_dec = permanence_dec
+        self.max_segments_per_cell = max_segments_per_cell
+        self.max_synapses_per_segment = max_synapses_per_segment
 
-        # Segments and synapses are stored as sparse structures
-        # For efficiency, we use a simplified representation
-        # In production, use proper sparse data structures
-
-        # Segment connections: learned through usage
-        # Using a dense approximation for simplicity
-        self.register_buffer(
-            'segment_weights',
-            torch.zeros(self.num_cells, self.num_cells) * 0.01
-        )
-
-        # Cell states
+        # SPARSE segment storage: Dict[cell_id] -> List[Dict[presynaptic_cell_id -> permanence]]
+        # Each cell can have multiple segments, each segment has synapses to presynaptic cells
+        self.segments: Dict[int, List[Dict[int, float]]] = {}
+        
+        # Cell states (these are small: O(num_cells) not O(num_cells^2))
         self.register_buffer('active_cells', torch.zeros(self.num_cells))
         self.register_buffer('winner_cells', torch.zeros(self.num_cells))
         self.register_buffer('predictive_cells', torch.zeros(self.num_cells))
@@ -292,6 +292,10 @@ class PytorchTemporalMemory(nn.Module):
         # Previous states for learning
         self.register_buffer('prev_active_cells', torch.zeros(self.num_cells))
         self.register_buffer('prev_winner_cells', torch.zeros(self.num_cells))
+        
+        # Track active cell indices for efficiency
+        self._prev_active_indices: List[int] = []
+        self._active_indices: List[int] = []
 
     def reset(self):
         """Reset cell states for new sequence."""
@@ -300,6 +304,42 @@ class PytorchTemporalMemory(nn.Module):
         self.predictive_cells.zero_()
         self.prev_active_cells.zero_()
         self.prev_winner_cells.zero_()
+        self._prev_active_indices = []
+        self._active_indices = []
+
+    def _get_segment_activity(self, cell_id: int, active_cell_set: set) -> int:
+        """Count active connected synapses for the best segment of a cell."""
+        if cell_id not in self.segments:
+            return 0
+        
+        best_activity = 0
+        for segment in self.segments[cell_id]:
+            activity = sum(
+                1 for pre_cell, perm in segment.items()
+                if pre_cell in active_cell_set and perm >= self.permanence_connected
+            )
+            best_activity = max(best_activity, activity)
+        
+        return best_activity
+
+    def _get_best_matching_segment(self, cell_id: int, active_cell_set: set) -> Tuple[Optional[int], int]:
+        """Find the best matching segment for a cell (most active synapses)."""
+        if cell_id not in self.segments:
+            return None, 0
+        
+        best_segment_idx = None
+        best_activity = 0
+        
+        for seg_idx, segment in enumerate(self.segments[cell_id]):
+            activity = sum(
+                1 for pre_cell, perm in segment.items()
+                if pre_cell in active_cell_set and perm >= self.permanence_connected
+            )
+            if activity > best_activity:
+                best_activity = activity
+                best_segment_idx = seg_idx
+        
+        return best_segment_idx, best_activity
 
     def compute_activity(self, active_columns: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -309,59 +349,123 @@ class PytorchTemporalMemory(nn.Module):
             active_cells: Currently active cells
             predictive_cells: Cells predicted for next step
         """
-        # Expand columns to cells
-        # Each column has cells_per_column cells
-        column_indices = torch.where(active_columns > 0)[0]
-
-        # Cells that were predicted AND are in active columns
-        predicted_active = torch.zeros(self.num_cells, device=active_columns.device)
+        device = active_columns.device
+        column_indices = torch.where(active_columns > 0)[0].tolist()
+        
+        # Previous active cells as a set for O(1) lookup
+        prev_active_set = set(self._prev_active_indices)
+        
+        # Compute new active cells
+        new_active = torch.zeros(self.num_cells, device=device)
+        new_winner = torch.zeros(self.num_cells, device=device)
+        new_active_indices = []
 
         for col_idx in column_indices:
             start_cell = col_idx * self.cells_per_column
             end_cell = start_cell + self.cells_per_column
-
+            
             # Check if any cell in this column was predicted
             col_predictions = self.predictive_cells[start_cell:end_cell]
-
+            
             if col_predictions.sum() > 0:
-                # Activate predicted cells
-                predicted_active[start_cell:end_cell] = col_predictions[:]
+                # Activate only predicted cells
+                for cell_offset in range(self.cells_per_column):
+                    cell_id = start_cell + cell_offset
+                    if self.predictive_cells[cell_id] > 0:
+                        new_active[cell_id] = 1.0
+                        new_winner[cell_id] = 1.0
+                        new_active_indices.append(cell_id)
             else:
-                # Bursting: activate all cells in column
-                predicted_active[start_cell:end_cell] = 1.0
+                # Bursting: activate all cells, pick winner based on best matching segment
+                best_cell = start_cell
+                best_match_score = -1
+                
+                for cell_offset in range(self.cells_per_column):
+                    cell_id = start_cell + cell_offset
+                    new_active[cell_id] = 1.0
+                    new_active_indices.append(cell_id)
+                    
+                    # Find cell with best matching segment for learning
+                    _, match_score = self._get_best_matching_segment(cell_id, prev_active_set)
+                    if match_score > best_match_score:
+                        best_match_score = match_score
+                        best_cell = cell_id
+                
+                new_winner[best_cell] = 1.0
 
-        # New active cells
-        new_active = predicted_active
+        self._active_indices = new_active_indices
+        active_set = set(new_active_indices)
+        
+        # Compute predictions for next step using sparse segments
+        new_predictive = torch.zeros(self.num_cells, device=device)
+        
+        for cell_id, segments in self.segments.items():
+            for segment in segments:
+                # Count active connected synapses
+                activity = sum(
+                    1 for pre_cell, perm in segment.items()
+                    if pre_cell in active_set and perm >= self.permanence_connected
+                )
+                if activity >= self.activation_threshold:
+                    new_predictive[cell_id] = 1.0
+                    break  # Cell is predicted, no need to check more segments
 
-        # Compute predictions for next step
-        # Cells with enough active presynaptic connections
-        connected_weights = (self.segment_weights >= self.permanence_connected).float()
-        presynaptic_activity = torch.matmul(connected_weights, new_active)
-        new_predictive = (presynaptic_activity >= self.activation_threshold).float()
-
+        self.winner_cells = new_winner
         return new_active, new_predictive
 
     def learn(self, active_columns: torch.Tensor):
-        """Learn from current activation pattern."""
-        if self.prev_active_cells.sum() == 0:
+        """Learn from current activation pattern using sparse updates."""
+        if len(self._prev_active_indices) == 0:
             return  # Nothing to learn from
 
-        # Strengthen connections from previously active cells to currently active cells
-        # This is a simplified Hebbian learning rule
-
-        active_mask = self.active_cells.unsqueeze(0)  # (1, num_cells)
-        prev_active_mask = self.prev_active_cells.unsqueeze(1)  # (num_cells, 1)
-
-        # Hebbian update: strengthen connections from prev_active to active
-        delta = self.permanence_inc * active_mask * prev_active_mask
-
-        # Decay unused connections slightly
-        decay = self.permanence_dec * 0.1 * (1 - active_mask) * prev_active_mask
-
-        self.segment_weights = torch.clamp(
-            self.segment_weights + delta - decay,
-            0.0, 1.0
-        )
+        prev_active_set = set(self._prev_active_indices)
+        
+        # For each winner cell, reinforce connections from previously active cells
+        winner_indices = torch.where(self.winner_cells > 0)[0].tolist()
+        
+        for cell_id in winner_indices:
+            # Get or create segments for this cell
+            if cell_id not in self.segments:
+                self.segments[cell_id] = []
+            
+            # Find best matching segment or create new one
+            best_seg_idx, best_activity = self._get_best_matching_segment(cell_id, prev_active_set)
+            
+            if best_seg_idx is not None and best_activity >= self.min_threshold:
+                # Reinforce existing segment
+                segment = self.segments[cell_id][best_seg_idx]
+                
+                # Strengthen synapses to active cells, weaken to inactive
+                for pre_cell in list(segment.keys()):
+                    if pre_cell in prev_active_set:
+                        segment[pre_cell] = min(1.0, segment[pre_cell] + self.permanence_inc)
+                    else:
+                        segment[pre_cell] = max(0.0, segment[pre_cell] - self.permanence_dec)
+                        # Remove dead synapses
+                        if segment[pre_cell] <= 0:
+                            del segment[pre_cell]
+                
+                # Add new synapses to previously active cells not yet connected
+                existing_pre = set(segment.keys())
+                new_candidates = [c for c in self._prev_active_indices if c not in existing_pre]
+                num_to_add = min(
+                    self.max_new_synapse_count - len(segment),
+                    len(new_candidates),
+                    self.max_synapses_per_segment - len(segment)
+                )
+                if num_to_add > 0:
+                    import random
+                    for pre_cell in random.sample(new_candidates, num_to_add):
+                        segment[pre_cell] = self.initial_permanence
+                        
+            elif len(self.segments[cell_id]) < self.max_segments_per_cell:
+                # Create new segment
+                import random
+                num_synapses = min(self.max_new_synapse_count, len(self._prev_active_indices))
+                if num_synapses > 0:
+                    pre_cells = random.sample(self._prev_active_indices, num_synapses)
+                    new_segment = {pc: self.initial_permanence for pc in pre_cells}
+                    self.segments[cell_id].append(new_segment)
 
     def forward(
         self,
@@ -381,6 +485,7 @@ class PytorchTemporalMemory(nn.Module):
         # Save previous state
         self.prev_active_cells = self.active_cells.clone()
         self.prev_winner_cells = self.winner_cells.clone()
+        self._prev_active_indices = self._active_indices.copy()
 
         # Compute new activations
         self.active_cells, new_predictive = self.compute_activity(active_columns)
@@ -408,6 +513,19 @@ class PytorchTemporalMemory(nn.Module):
             'active_cells': self.active_cells.clone(),
             'predictive_cells': self.predictive_cells.clone(),
             'anomaly': torch.tensor(anomaly, device=active_columns.device),
+        }
+    
+    def get_memory_stats(self) -> Dict[str, int]:
+        """Get statistics about memory usage."""
+        total_segments = sum(len(segs) for segs in self.segments.values())
+        total_synapses = sum(
+            len(seg) for segs in self.segments.values() for seg in segs
+        )
+        return {
+            'cells_with_segments': len(self.segments),
+            'total_segments': total_segments,
+            'total_synapses': total_synapses,
+            'avg_synapses_per_segment': total_synapses / max(total_segments, 1),
         }
 
 
