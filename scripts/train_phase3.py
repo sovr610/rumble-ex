@@ -74,12 +74,12 @@ def get_mode_config(mode: str) -> dict:
             "input_dim": 3072,
             "save_path": "checkpoints/htm_layer_3b.pth",
         },
-        "production": {  # 7B scale
-            "sequences": 50000,
+        "production": {  # 7B scale - reduced for memory efficiency
+            "sequences": 10000,
             "epochs": 50,
-            "seq_length": 500,
-            "column_count": 16384,
-            "cells_per_column": 64,
+            "seq_length": 200,
+            "column_count": 8192,
+            "cells_per_column": 32,
             "input_dim": 4096,
             "save_path": "checkpoints/htm_layer_7b.pth",
         },
