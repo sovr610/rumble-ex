@@ -44,6 +44,8 @@ def parse_args():
     parser.add_argument("--save-path", type=str, default=None, help="Save path")
     parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
     parser.add_argument("--compile", action="store_true", help="Use torch.compile")
+    parser.add_argument("--num-workers", type=int, default=8, help="DataLoader workers")
+    parser.add_argument("--num-samples", type=int, default=None, help="Override number of training samples")
     return parser.parse_args()
 
 
@@ -102,13 +104,15 @@ def get_device(device_arg: str) -> torch.device:
 
 class MultiModalSequenceDataset(Dataset):
     """
-    Synthetic multi-modal temporal sequence dataset.
+    Synthetic multi-modal temporal sequence dataset with LAZY generation.
     
     Task: Given sequences from multiple modalities, predict the
     class based on their temporal fusion. Tests:
     1. Multi-modal integration (combining different input sources)
     2. Temporal memory (remembering past context)
     3. Attention-based competition (which modality is important)
+    
+    Data is generated on-the-fly in __getitem__ to avoid OOM.
     """
     
     def __init__(
@@ -125,56 +129,51 @@ class MultiModalSequenceDataset(Dataset):
         self.num_modalities = num_modalities
         self.modality_dim = modality_dim
         self.seq_length = seq_length
+        self.train = train
+        self.base_seed = 42 if train else 123
         
-        np.random.seed(42 if train else 123)
-        
-        # Generate data where class is determined by:
-        # 1. Cross-modal correlations
-        # 2. Temporal patterns
-        # 3. Relative salience of modalities
-        
-        self.data = []
-        self.labels = []
-        
-        for i in range(num_samples):
-            label = i % num_classes
-            
-            # Generate sequences for each modality
-            modalities = []
-            
-            for m in range(num_modalities):
-                seq = np.zeros((seq_length, modality_dim))
-                
-                # Class-specific temporal pattern
-                freq = 0.5 + label * 0.3 + m * 0.1
-                phase = label * np.pi / num_classes + m * np.pi / 4
-                
-                for t in range(seq_length):
-                    # Sinusoidal pattern with class-specific frequency
-                    base_signal = np.sin(2 * np.pi * freq * t / seq_length + phase)
-                    
-                    # Different modalities have different "importance" per class
-                    modality_weight = 1.0 if (label + m) % num_modalities == 0 else 0.5
-                    
-                    # Create sparse feature activation
-                    feature_idx = np.arange(modality_dim)
-                    activation = np.sin(feature_idx * 0.1 + base_signal) * modality_weight
-                    
-                    # Add noise
-                    noise = np.random.randn(modality_dim) * 0.2
-                    seq[t] = activation + noise
-                
-                modalities.append(torch.tensor(seq, dtype=torch.float32))
-            
-            self.data.append(modalities)
-            self.labels.append(label)
+        # Pre-compute labels only (tiny memory footprint)
+        self.labels = [i % num_classes for i in range(num_samples)]
     
     def __len__(self):
         return self.num_samples
     
+    def _generate_sample(self, idx: int, label: int) -> list:
+        """Generate a single sample on-the-fly."""
+        # Use deterministic seed for reproducibility
+        rng = np.random.RandomState(self.base_seed + idx)
+        
+        modalities = []
+        for m in range(self.num_modalities):
+            seq = np.zeros((self.seq_length, self.modality_dim), dtype=np.float32)
+            
+            # Class-specific temporal pattern
+            freq = 0.5 + label * 0.3 + m * 0.1
+            phase = label * np.pi / self.num_classes + m * np.pi / 4
+            
+            for t in range(self.seq_length):
+                # Sinusoidal pattern with class-specific frequency
+                base_signal = np.sin(2 * np.pi * freq * t / self.seq_length + phase)
+                
+                # Different modalities have different "importance" per class
+                modality_weight = 1.0 if (label + m) % self.num_modalities == 0 else 0.5
+                
+                # Create sparse feature activation
+                feature_idx = np.arange(self.modality_dim)
+                activation = np.sin(feature_idx * 0.1 + base_signal) * modality_weight
+                
+                # Add noise
+                noise = rng.randn(self.modality_dim).astype(np.float32) * 0.2
+                seq[t] = activation + noise
+            
+            modalities.append(torch.from_numpy(seq))
+        
+        return modalities
+    
     def __getitem__(self, idx):
-        # Returns: list of (seq_length, modality_dim) tensors, label
-        return self.data[idx], self.labels[idx]
+        label = self.labels[idx]
+        modalities = self._generate_sample(idx, label)
+        return modalities, label
 
 
 def collate_fn(batch):
@@ -416,36 +415,45 @@ def main():
     # Scale modality_dim based on mode
     modality_dim = workspace_dim // 2
     
-    # Create datasets
-    print("\nCreating multi-modal sequence datasets...")
+    # Determine sample counts
+    train_samples = args.num_samples if args.num_samples else (5000 if args.mode == "dev" else 50000)
+    test_samples = train_samples // 5
+    num_classes = 5 if args.mode == "dev" else 20
+    
+    # Create datasets with lazy generation (memory efficient)
+    print("\nCreating multi-modal sequence datasets (lazy generation)...")
+    print(f"  Train samples: {train_samples}, Test samples: {test_samples}")
     train_dataset = MultiModalSequenceDataset(
-        num_samples=5000 if args.mode == "dev" else 50000,
-        num_classes=5 if args.mode == "dev" else 20,
+        num_samples=train_samples,
+        num_classes=num_classes,
         num_modalities=num_modalities,
         modality_dim=modality_dim,
         seq_length=seq_length,
         train=True,
     )
     test_dataset = MultiModalSequenceDataset(
-        num_samples=1000 if args.mode == "dev" else 10000,
-        num_classes=5 if args.mode == "dev" else 20,
+        num_samples=test_samples,
+        num_classes=num_classes,
         num_modalities=num_modalities,
         modality_dim=modality_dim,
         seq_length=seq_length,
         train=False,
     )
     
+    # Use pinned memory for faster GPU transfers
+    use_cuda = device.type == 'cuda'
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=4, collate_fn=collate_fn,
+        num_workers=args.num_workers, collate_fn=collate_fn,
+        pin_memory=use_cuda, persistent_workers=args.num_workers > 0,
     )
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=4, collate_fn=collate_fn,
+        num_workers=args.num_workers, collate_fn=collate_fn,
+        pin_memory=use_cuda, persistent_workers=args.num_workers > 0,
     )
     
     # Create model with mode-specific dimensions
-    num_classes = 5 if args.mode == "dev" else 20
     model = GlobalWorkspaceClassifier(
         num_modalities=num_modalities,
         modality_dim=modality_dim,
