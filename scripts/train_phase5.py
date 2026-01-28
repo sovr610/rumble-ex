@@ -70,7 +70,9 @@ def parse_args():
     parser.add_argument("--device", type=str, default="auto", help="Device")
     parser.add_argument("--save-path", type=str, default=None, help="Save path")
     parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
-    parser.add_argument("--curriculum", action="store_true", default=True, help="Use curriculum learning")
+    parser.add_argument("--curriculum", action="store_true", help="Use curriculum learning (start small, grow grid)")
+    parser.add_argument("--no-curriculum", dest="curriculum", action="store_false", help="Disable curriculum learning")
+    parser.set_defaults(curriculum=True)
     return parser.parse_args()
 
 

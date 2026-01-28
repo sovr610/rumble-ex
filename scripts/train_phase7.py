@@ -66,6 +66,8 @@ def get_mode_config(mode: str) -> dict:
             "inner_steps": 10,
             "feature_dim": 64,
             "hidden_dim": 128,
+            "num_classes": 100,
+            "weight_decay": 0.0,
             "save_path": "checkpoints/meta_learning_dev.pth",
         },
         "production_1b": {
@@ -79,6 +81,8 @@ def get_mode_config(mode: str) -> dict:
             "inner_steps": 15,
             "feature_dim": 256,
             "hidden_dim": 512,
+            "num_classes": 200,
+            "weight_decay": 0.01,
             "save_path": "checkpoints/meta_learning_1b.pth",
         },
         "production_3b": {
@@ -92,6 +96,8 @@ def get_mode_config(mode: str) -> dict:
             "inner_steps": 20,
             "feature_dim": 512,
             "hidden_dim": 1024,
+            "num_classes": 500,
+            "weight_decay": 0.01,
             "save_path": "checkpoints/meta_learning_3b.pth",
         },
         "production": {  # 7B scale
@@ -105,6 +111,8 @@ def get_mode_config(mode: str) -> dict:
             "inner_steps": 30,
             "feature_dim": 1024,
             "hidden_dim": 2048,
+            "num_classes": 1000,
+            "weight_decay": 0.01,
             "save_path": "checkpoints/meta_learning_7b.pth",
         },
     }
@@ -495,6 +503,7 @@ def main():
     num_classes = mode_config["num_classes"]
     feature_dim = mode_config["feature_dim"]
     weight_decay = mode_config["weight_decay"]
+    save_path = args.save_path or mode_config["save_path"]
     first_order = args.first_order  # Boolean flag, use directly
     
     # Use AMP for production modes
@@ -583,7 +592,7 @@ def main():
             
             if metrics['mean_accuracy'] > best_acc:
                 best_acc = metrics['mean_accuracy']
-                save_dir = Path(args.save_path).parent
+                save_dir = Path(save_path).parent
                 save_dir.mkdir(parents=True, exist_ok=True)
                 torch.save({
                     "epoch": epoch,
@@ -593,8 +602,8 @@ def main():
                     "metrics": metrics,
                     "mode": args.mode,
                     "config": mode_config,
-                }, args.save_path)
-                print(f"  New best! Saved to {args.save_path}")
+                }, save_path)
+                print(f"  New best! Saved to {save_path}")
             
             print("-" * 60)
     
