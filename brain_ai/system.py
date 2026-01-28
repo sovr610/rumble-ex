@@ -142,8 +142,10 @@ class BrainAI(nn.Module):
     def _build_temporal(self):
         """Build HTM temporal layer."""
         if self.config.use_htm:
+            # HTM input_size should match workspace_dim since it receives
+            # the integrated workspace representation, not raw encoder output
             self.htm = create_htm_layer(
-                input_size=self.config.encoder.output_dim,
+                input_size=self.config.workspace.workspace_dim,
                 column_count=self.config.htm.column_count,
                 cells_per_column=self.config.htm.cells_per_column,
                 sparsity=self.config.htm.sparsity,
