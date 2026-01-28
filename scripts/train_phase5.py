@@ -33,6 +33,29 @@ from brain_ai.decision.active_inference import (
 )
 
 
+class RunningStats:
+    """Track running mean/std for reward normalization."""
+    def __init__(self):
+        self.n = 0
+        self.mean = 0.0
+        self.M2 = 0.0
+    
+    def update(self, x):
+        self.n += 1
+        delta = x - self.mean
+        self.mean += delta / self.n
+        delta2 = x - self.mean
+        self.M2 += delta * delta2
+    
+    def std(self):
+        if self.n < 2:
+            return 1.0
+        return np.sqrt(self.M2 / (self.n - 1)) + 1e-8
+    
+    def normalize(self, x):
+        return (x - self.mean) / self.std()
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Active Inference Agent")
     parser.add_argument("--mode", type=str, default="dev",
@@ -47,6 +70,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default="auto", help="Device")
     parser.add_argument("--save-path", type=str, default=None, help="Save path")
     parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision")
+    parser.add_argument("--curriculum", action="store_true", default=True, help="Use curriculum learning")
     return parser.parse_args()
 
 
@@ -149,6 +173,7 @@ class GridWorldEnv:
                 break
         
         self.steps = 0
+        self._old_pos = self.agent_pos.copy()
         return self._get_observation()
     
     def _get_observation(self) -> torch.Tensor:
@@ -223,6 +248,9 @@ class GridWorldEnv:
         if self.stochastic and np.random.rand() < 0.1:
             action = np.random.randint(0, self.num_actions)
         
+        # Store old position for potential-based shaping
+        old_pos = self.agent_pos.copy()
+        
         # Apply movement
         new_pos = self.agent_pos + movements[action]
         
@@ -233,18 +261,26 @@ class GridWorldEnv:
         # Check goal
         at_goal = np.array_equal(self.agent_pos, self.goal_pos)
         
-        # Compute reward
+        # Potential-based reward shaping (guarantees optimal policy preservation)
+        old_dist = np.sqrt(np.sum((self.goal_pos - old_pos) ** 2)) if hasattr(self, '_old_pos') else 0
+        new_dist = np.sqrt(np.sum((self.goal_pos - self.agent_pos) ** 2))
+        self._old_pos = self.agent_pos.copy()
+        
+        # Compute reward with dense shaping
         if at_goal:
-            reward = 10.0
+            reward = 10.0  # Goal bonus
         else:
-            # Small penalty for movement (encourages efficiency)
-            reward = -0.1
-            # Distance-based shaping
-            dist = np.sqrt(np.sum((self.goal_pos - self.agent_pos) ** 2))
-            reward += (1.0 - dist / (self.size * np.sqrt(2))) * 0.1
+            # Potential-based shaping: reward for getting closer
+            gamma = 0.99
+            potential_diff = gamma * (self.size - new_dist) - (self.size - old_dist)
+            reward = potential_diff * 0.5  # Scale the shaping
+            
+            # Small time penalty (but much smaller than before)
+            reward -= 0.01
         
         self.steps += 1
-        done = at_goal or self.steps >= 100
+        max_steps = min(100, self.size * self.size)  # Scale max steps with grid size
+        done = at_goal or self.steps >= max_steps
         
         return self._get_observation(), reward, done, {'at_goal': at_goal}
 
@@ -300,6 +336,15 @@ class NeuralActiveInferenceAgent(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
+        )
+        
+        # Value network for advantage estimation (Actor-Critic)
+        self.value = nn.Sequential(
+            nn.Linear(state_dim + obs_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
         )
     
     def encode_state(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -397,14 +442,17 @@ class NeuralActiveInferenceAgent(nn.Module):
         reward: torch.Tensor,
         next_obs: torch.Tensor,
         done: torch.Tensor,
+        returns: Optional[torch.Tensor] = None,
+        gamma: float = 0.99,
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute training losses.
+        Compute training losses with proper advantage estimation.
         
         Trains:
         1. State encoder (reconstruction)
         2. Generative model (prediction accuracy)
-        3. Policy (maximize reward, minimize EFE)
+        3. Policy (Actor-Critic with advantage)
+        4. Value network (TD learning)
         """
         batch_size = obs.shape[0]
         
@@ -426,24 +474,57 @@ class NeuralActiveInferenceAgent(nn.Module):
         )
         trans_loss = F.mse_loss(pred_next_mu, next_state_mu.detach())
         
-        # KL divergence for VAE regularization
+        # KL divergence for VAE regularization (with annealing)
         kl_loss = -0.5 * torch.mean(
             1 + state_logvar - state_mu.pow(2) - state_logvar.exp()
         )
         
-        # Policy loss (maximize reward)
+        # Value estimation for Actor-Critic
         policy_input = torch.cat([state.detach(), obs], dim=-1)
+        values = self.value(policy_input).squeeze(-1)
+        
+        # Compute TD targets and advantages
+        with torch.no_grad():
+            next_state = next_state_mu
+            next_policy_input = torch.cat([next_state, next_obs], dim=-1)
+            next_values = self.value(next_policy_input).squeeze(-1)
+            # TD target: r + gamma * V(s') * (1 - done)
+            td_targets = reward + gamma * next_values * (1 - done)
+            # Advantage = TD target - V(s)
+            advantages = td_targets - values.detach()
+            # Normalize advantages for stable training
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        # Value loss (MSE)
+        value_loss = F.mse_loss(values, td_targets)
+        
+        # Policy loss with advantage (Actor)
         logits = self.policy(policy_input)
         log_probs = F.log_softmax(logits, dim=-1)
+        probs = F.softmax(logits, dim=-1)
         selected_log_probs = log_probs.gather(1, action.long().unsqueeze(1)).squeeze(1)
-        policy_loss = -(selected_log_probs * reward).mean()
+        
+        # Policy gradient with advantage
+        policy_loss = -(selected_log_probs * advantages).mean()
+        
+        # Entropy bonus for exploration
+        entropy = -(probs * log_probs).sum(dim=-1).mean()
+        entropy_bonus = -0.01 * entropy  # Negative because we minimize loss
         
         # Preference learning
         pref_pred = self.preference(obs).squeeze(-1)
         pref_loss = F.mse_loss(pref_pred, reward)
         
-        # Total loss
-        total_loss = recon_loss + trans_loss + 0.1 * kl_loss + policy_loss + 0.5 * pref_loss
+        # Total loss with balanced weights
+        total_loss = (
+            recon_loss + 
+            trans_loss + 
+            0.05 * kl_loss +  # Reduced KL weight
+            policy_loss + 
+            0.5 * value_loss +
+            entropy_bonus +
+            0.3 * pref_loss
+        )
         
         return {
             'total': total_loss,
@@ -451,6 +532,8 @@ class NeuralActiveInferenceAgent(nn.Module):
             'trans': trans_loss,
             'kl': kl_loss,
             'policy': policy_loss,
+            'value': value_loss,
+            'entropy': entropy,
             'pref': pref_loss,
         }
 
@@ -461,16 +544,19 @@ def train_episode(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     explore: bool = True,
+    temperature: float = 1.0,
+    reward_stats: Optional[RunningStats] = None,
 ) -> Tuple[float, int, bool]:
-    """Run one training episode."""
+    """Run one training episode with proper returns computation."""
     obs = env.reset().to(device)
     
     episode_reward = 0.0
     transitions = []
     
-    for step in range(100):
-        # Select action
-        action, info = agent.select_action(obs, temperature=1.0, explore=explore)
+    max_steps = min(100, env.size * env.size)
+    for step in range(max_steps):
+        # Select action with decaying temperature
+        action, info = agent.select_action(obs, temperature=temperature, explore=explore)
         
         # Take step
         next_obs, reward, done, env_info = env.step(action)
@@ -500,14 +586,30 @@ def train_episode(
         batch_next_obs = torch.stack([t['next_obs'] for t in transitions])
         batch_done = torch.cat([t['done'] for t in transitions])
         
+        # Update reward statistics and normalize
+        if reward_stats is not None:
+            for r in batch_reward.cpu().numpy():
+                reward_stats.update(r)
+            # Normalize rewards for stable training
+            batch_reward = (batch_reward - reward_stats.mean) / reward_stats.std()
+        
+        # Compute discounted returns (for reference)
+        gamma = 0.99
+        returns = torch.zeros_like(batch_reward)
+        running_return = 0.0
+        for t in reversed(range(len(batch_reward))):
+            running_return = batch_reward[t] + gamma * running_return * (1 - batch_done[t])
+            returns[t] = running_return
+        
         # Compute loss and update
         optimizer.zero_grad()
         losses = agent.compute_loss(
             batch_obs, batch_action, batch_reward,
-            batch_next_obs, batch_done
+            batch_next_obs, batch_done,
+            returns=returns, gamma=gamma
         )
         losses['total'].backward()
-        torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=0.5)  # Tighter clipping
         optimizer.step()
     
     return episode_reward, step + 1, env_info.get('at_goal', False)
@@ -519,17 +621,20 @@ def evaluate(
     device: torch.device,
     num_episodes: int = 50,
 ) -> Tuple[float, float, float]:
-    """Evaluate agent without exploration."""
+    """Evaluate agent without exploration (greedy policy)."""
     total_reward = 0.0
     total_steps = 0
     success_count = 0
+    
+    max_steps = min(100, env.size * env.size)
     
     for _ in range(num_episodes):
         obs = env.reset().to(device)
         episode_reward = 0.0
         
-        for step in range(100):
-            action, _ = agent.select_action(obs, temperature=0.1, explore=False)
+        for step in range(max_steps):
+            # Greedy action selection (very low temperature)
+            action, _ = agent.select_action(obs, temperature=0.01, explore=False)
             next_obs, reward, done, info = env.step(action)
             next_obs = next_obs.to(device)
             
@@ -608,18 +713,38 @@ def main():
     )
     
     best_success_rate = 0.0
+    reward_stats = RunningStats()
+    
+    # Curriculum learning: start with smaller grid
+    use_curriculum = args.curriculum and args.mode != "dev"
+    if use_curriculum:
+        current_grid_size = 5  # Start small
+        target_grid_size = grid_size
+        curriculum_threshold = 0.7  # Increase grid when success rate exceeds this
+        env = GridWorldEnv(size=current_grid_size, obs_dim=obs_dim, stochastic=False)
+        print(f"\nCurriculum learning enabled: starting with {current_grid_size}x{current_grid_size} grid")
+    else:
+        current_grid_size = grid_size
     
     print(f"\nTraining for {episodes} episodes...")
     print("=" * 60)
     
     episode_rewards = []
+    recent_successes = []  # Track recent success rate for curriculum
     
     for episode in range(1, episodes + 1):
+        # Temperature decay for exploration
+        temperature = max(0.1, 1.0 - episode / (episodes * 0.7))
+        
         # Train episode
         reward, steps, success = train_episode(
-            agent, env, optimizer, device, explore=True
+            agent, env, optimizer, device, explore=True,
+            temperature=temperature, reward_stats=reward_stats
         )
         episode_rewards.append(reward)
+        recent_successes.append(float(success))
+        if len(recent_successes) > 100:
+            recent_successes.pop(0)
         
         # Log progress
         if episode % 50 == 0:
@@ -633,6 +758,18 @@ def main():
             print(f"  Eval Avg Reward: {eval_reward:.2f}")
             print(f"  Eval Avg Steps: {eval_steps:.1f}")
             print(f"  Eval Success Rate: {eval_success*100:.1f}%")
+            print(f"  Temperature: {temperature:.3f}")
+            if use_curriculum:
+                print(f"  Current Grid Size: {current_grid_size}x{current_grid_size}")
+            
+            # Curriculum progression
+            if use_curriculum and current_grid_size < target_grid_size:
+                recent_rate = np.mean(recent_successes) if recent_successes else 0
+                if recent_rate >= curriculum_threshold and eval_success >= curriculum_threshold:
+                    current_grid_size = min(current_grid_size + 2, target_grid_size)
+                    env = GridWorldEnv(size=current_grid_size, obs_dim=obs_dim, stochastic=False)
+                    recent_successes.clear()  # Reset for new difficulty
+                    print(f"  [CURRICULUM] Increased grid to {current_grid_size}x{current_grid_size}!")
             
             if eval_success > best_success_rate:
                 best_success_rate = eval_success
