@@ -683,15 +683,15 @@ def demo_direct_inference(model):
     predictions = torch.argmax(logits, dim=-1)
     probabilities = torch.softmax(logits, dim=-1)
     
-    print(f"   Predictions: {predictions.numpy()}")
-    print(f"   Top-1 confidence: {probabilities.max(dim=-1).values.numpy()}")
+    print(f"   Predictions: {predictions.detach().numpy()}")
+    print(f"   Top-1 confidence: {probabilities.max(dim=-1).values.detach().numpy()}")
     print(f"   Logits range: [{logits.min().item():.2f}, {logits.max().item():.2f}]")
     
     # Entropy (uncertainty measure)
     entropy = -(probabilities * (probabilities + 1e-8).log()).sum(dim=-1)
     max_entropy = np.log(logits.shape[-1])
-    print(f"   Prediction entropy: {entropy.numpy()} (max={max_entropy:.2f})")
-    print(f"   Normalized uncertainty: {(entropy / max_entropy).numpy()}")
+    print(f"   Prediction entropy: {entropy.detach().numpy()} (max={max_entropy:.2f})")
+    print(f"   Normalized uncertainty: {(entropy / max_entropy).detach().numpy()}")
 
 
 def demo_inference_wrapper():
