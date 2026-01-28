@@ -1019,13 +1019,28 @@ def demo_batch_processing(brain):
     
     # Prediction distribution analysis
     print(f"\n📈 Batch Prediction Analysis:")
-    if isinstance(results[0], dict):
-        predictions = [r.get('prediction', r.get('class', 0)) for r in results]
-    else:
-        predictions = [r if isinstance(r, int) else r.item() for r in results]
-    unique_preds = set(predictions)
+    # Results are InferenceResult objects, extract predictions
+    predictions = []
+    for r in results:
+        if hasattr(r, 'prediction'):
+            pred = r.prediction
+            predictions.append(pred if isinstance(pred, (int, str)) else pred)
+        elif isinstance(r, dict):
+            predictions.append(r.get('prediction', r.get('class', 0)))
+        elif isinstance(r, int):
+            predictions.append(r)
+        elif hasattr(r, 'item'):
+            predictions.append(r.item())
+        else:
+            predictions.append(str(r))
+    
+    unique_preds = set(str(p) for p in predictions)
     print(f"   Unique predictions: {len(unique_preds)} / {len(predictions)}")
-    print(f"   Prediction distribution: {dict(zip(*np.unique(predictions, return_counts=True)))}")
+    
+    # Count prediction distribution
+    from collections import Counter
+    pred_counts = Counter(predictions)
+    print(f"   Prediction distribution: {dict(pred_counts)}")
     
     # Memory analysis
     if torch.cuda.is_available():
