@@ -421,8 +421,21 @@ class NeuralActiveInferenceAgent(nn.Module):
         # Combine policy logits with EFE (negative EFE = good)
         combined = logits - efes.unsqueeze(0) * 0.5
         
-        # Apply temperature and sample
-        probs = F.softmax(combined / temperature, dim=-1)
+        # Clamp combined logits for numerical stability
+        combined = torch.clamp(combined, -50.0, 50.0)
+        
+        # Apply temperature and sample with numerical stability
+        scaled_logits = combined / max(temperature, 0.01)  # Prevent division by tiny temp
+        scaled_logits = scaled_logits - scaled_logits.max(dim=-1, keepdim=True)[0]  # Subtract max for stability
+        probs = F.softmax(scaled_logits, dim=-1)
+        
+        # Safety check: replace NaN/inf with uniform distribution
+        if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any():
+            probs = torch.ones_like(probs) / probs.shape[-1]
+        
+        # Ensure probabilities sum to 1 and are positive
+        probs = probs.clamp(min=1e-8)
+        probs = probs / probs.sum(dim=-1, keepdim=True)
         
         if explore:
             action = torch.multinomial(probs, 1).item()
@@ -492,8 +505,15 @@ class NeuralActiveInferenceAgent(nn.Module):
             td_targets = reward + gamma * next_values * (1 - done)
             # Advantage = TD target - V(s)
             advantages = td_targets - values.detach()
-            # Normalize advantages for stable training
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # Normalize advantages for stable training (handle single-element case)
+            if advantages.numel() > 1:
+                adv_std = advantages.std()
+                if adv_std > 1e-8:  # Only normalize if there's variance
+                    advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+                else:
+                    advantages = advantages - advantages.mean()
+            # Clamp to prevent extreme values
+            advantages = torch.clamp(advantages, -10.0, 10.0)
         
         # Value loss (MSE)
         value_loss = F.mse_loss(values, td_targets)
@@ -525,6 +545,10 @@ class NeuralActiveInferenceAgent(nn.Module):
             entropy_bonus +
             0.3 * pref_loss
         )
+        
+        # Safety check: skip update if loss is NaN/inf
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            total_loss = torch.tensor(0.0, device=obs.device, requires_grad=True)
         
         return {
             'total': total_loss,
@@ -608,9 +632,12 @@ def train_episode(
             batch_next_obs, batch_done,
             returns=returns, gamma=gamma
         )
-        losses['total'].backward()
-        torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=0.5)  # Tighter clipping
-        optimizer.step()
+        
+        # Skip update if loss is invalid
+        if not torch.isnan(losses['total']) and not torch.isinf(losses['total']):
+            losses['total'].backward()
+            torch.nn.utils.clip_grad_norm_(agent.parameters(), max_norm=0.5)  # Tighter clipping
+            optimizer.step()
     
     return episode_reward, step + 1, env_info.get('at_goal', False)
 
