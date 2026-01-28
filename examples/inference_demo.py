@@ -732,7 +732,9 @@ def demo_inference_wrapper():
     print(f"   Prediction: {result.prediction}")
     print(f"   Confidence: {result.confidence:.2%}")
     print(f"   Top-5 classes: {result.top_k_classes}")
-    print(f"   Top-5 probabilities: {[f'{p:.2%}' for p in result.top_k_probs]}")
+    if result.top_k_classes:
+        top_k_probs = [prob for _, prob in result.top_k_classes]
+        print(f"   Top-5 probabilities: {[f'{p:.2%}' for p in top_k_probs]}")
     print(f"   Inference time: {result.inference_time_ms:.1f}ms (measured: {inference_time:.1f}ms)")
     
     # Memory tracking
