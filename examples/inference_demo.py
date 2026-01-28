@@ -25,6 +25,14 @@ import numpy as np
 from typing import Dict, Any, Optional, List
 from collections import OrderedDict
 import json
+import gc
+
+
+def cleanup_memory():
+    """Force garbage collection and clear CUDA cache."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 # =============================================================================
@@ -572,7 +580,7 @@ def demo_model_creation():
         create_control_agent,
     )
     
-    # Vision classifier
+    # Vision classifier - this is the main model we'll keep
     print("\n📸 Creating vision classifier...")
     vision_model = create_vision_classifier(
         num_classes=10,
@@ -583,46 +591,12 @@ def demo_model_creation():
     # Print detailed report for vision classifier
     print_model_report(vision_model, "Vision Classifier (10 classes)")
     
-    # Multimodal system
-    print("\n🔀 Creating multimodal system...")
-    multimodal = create_multimodal_system(
-        num_classes=100,
-        modalities=['vision', 'text'],
-        device='cpu',
-    )
-    print(f"   Created: {type(multimodal).__name__}")
+    # NOTE: To save memory, we only create one model at a time for detailed reports
+    # For a full demo with all models, run with more memory or use --light mode
     
-    # Print detailed report for multimodal system
-    print_model_report(multimodal, "Multimodal Vision+Text System")
-    
-    # Control agent
-    print("\n🎮 Creating control agent...")
-    agent = create_control_agent(
-        state_dim=32,
-        action_dim=4,
-        device='cpu',
-    )
-    print(f"   Created: {type(agent).__name__}")
-    
-    # Print detailed report for control agent
-    print_model_report(agent, "Control Agent (4 actions)")
-    
-    # Custom configuration
-    print("\n⚙️ Creating custom brain...")
-    custom = create_brain_ai(
-        modalities=['vision', 'text', 'audio', 'sensors'],
-        output_type='classify',
-        num_classes=1000,
-        hidden_dim=256,
-        snn_steps=8,
-        htm_columns=1024,
-        use_reasoning=True,
-        device='cpu',
-    )
-    print(f"   Created with all modalities and reasoning")
-    
-    # Print detailed report for custom brain
-    print_model_report(custom, "Full Brain (4 modalities, 1000 classes)")
+    print("\n💡 Note: Skipping additional model creation to conserve memory.")
+    print("   The vision classifier demonstrates all key features.")
+    print("   Other model types available: multimodal, control_agent, full_brain")
     
     return vision_model
 
@@ -694,7 +668,7 @@ def demo_direct_inference(model):
     print(f"   Normalized uncertainty: {(entropy / max_entropy).detach().numpy()}")
 
 
-def demo_inference_wrapper():
+def demo_inference_wrapper(existing_model=None):
     """Demo: Using BrainInference wrapper for easy inference."""
     print("\n" + "=" * 70)
     print("3. INFERENCE WRAPPER DEMO")
@@ -703,13 +677,17 @@ def demo_inference_wrapper():
     from brain_ai.inference import BrainInference
     from brain_ai.system import create_brain_ai
     
-    # Create model
-    model = create_brain_ai(
-        modalities=['vision', 'text'],
-        output_type='classify',
-        num_classes=10,
-        device='cpu',
-    )
+    # Reuse existing model if provided, otherwise create new one
+    if existing_model is not None:
+        model = existing_model
+        print("\n   (Reusing existing model to conserve memory)")
+    else:
+        model = create_brain_ai(
+            modalities=['vision', 'text'],
+            output_type='classify',
+            num_classes=10,
+            device='cpu',
+        )
     
     # Wrap for inference
     brain = BrainInference(model=model, device='cpu')
@@ -780,33 +758,21 @@ def demo_generation():
     print("4. TEXT GENERATION DEMO")
     print("=" * 70)
     
-    from brain_ai.inference import BrainInference
-    from brain_ai.system import create_brain_ai
-    
-    # Create generator model
-    model = create_brain_ai(
-        modalities=['text'],
-        output_type='generate',
-        vocab_size=10000,
-        device='cpu',
-    )
-    
-    brain = BrainInference(model=model, device='cpu')
-    
-    print("\n✍️ Generating text...")
-    prompt = "Once upon a time"
-    
-    try:
-        output = brain.generate(
-            prompt=prompt,
-            max_length=50,
-            temperature=0.8,
-        )
-        print(f"   Prompt: {prompt}")
-        print(f"   Generated: {output}")
-    except NotImplementedError as e:
-        print(f"   Note: {e}")
-        print("   (Generation requires trained model)")
+    # Skip model creation to save memory - just show info
+    print("\n✍️ Text Generation Info:")
+    print("   To enable generation, create a model with output_type='generate':")
+    print("   ")
+    print("   model = create_brain_ai(")
+    print("       modalities=['text'],")
+    print("       output_type='generate',")
+    print("       vocab_size=10000,")
+    print("   )")
+    print("   ")
+    print("   brain = BrainInference(model=model)")
+    print("   output = brain.generate(prompt='Once upon a time', max_length=50)")
+    print("   ")
+    print("   Note: Generation requires a trained model to produce meaningful output.")
+    print("   (Skipped actual model creation to conserve memory)")
 
 
 def demo_control_agent():
@@ -815,36 +781,20 @@ def demo_control_agent():
     print("5. CONTROL AGENT DEMO")
     print("=" * 70)
     
-    from brain_ai.inference import BrainInference
-    from brain_ai.system import create_control_agent
-    
-    state_dim = 32
-    action_dim = 4
-    
-    # Create agent
-    agent = create_control_agent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        device='cpu',
-    )
-    
-    brain = BrainInference(model=agent, device='cpu')
-    
-    print("\n🎮 Running control agent...")
-    
-    # Simulate environment interaction
-    for step in range(5):
-        # Random observation
-        observation = torch.randn(state_dim)
-        
-        # Get action
-        action = brain.get_action(observation, deterministic=True)
-        
-        print(f"   Step {step + 1}: obs shape={observation.shape}, action={action}")
-    
-    # Reset agent state
-    brain.reset()
-    print("\n   Agent state reset for new episode")
+    # Skip model creation to save memory - just show info
+    print("\n🎮 Control Agent Info:")
+    print("   To create a control agent for RL tasks:")
+    print("   ")
+    print("   agent = create_control_agent(")
+    print("       state_dim=32,")
+    print("       action_dim=4,")
+    print("   )")
+    print("   ")
+    print("   brain = BrainInference(model=agent)")
+    print("   action = brain.get_action(observation, deterministic=True)")
+    print("   ")
+    print("   The agent uses Active Inference for decision-making.")
+    print("   (Skipped actual model creation to conserve memory)")
 
 
 def demo_internal_states(brain):
@@ -1050,33 +1000,38 @@ def demo_batch_processing(brain):
         print(f"   Max allocated: {torch.cuda.max_memory_allocated() / 1024**2:.1f}MB")
 
 
-def demo_save_load():
+def demo_save_load(existing_model=None):
     """Demo: Saving and loading models."""
     print("\n" + "=" * 70)
     print("8. SAVE/LOAD DEMO")
     print("=" * 70)
     
     import tempfile
-    from brain_ai.system import create_brain_ai
     from brain_ai.inference import BrainInference
     
-    # Create model
-    model = create_brain_ai(
-        modalities=['vision'],
-        output_type='classify',
-        num_classes=10,
-        device='cpu',
-    )
+    if existing_model is None:
+        print("\n⚠️ No model provided - showing save/load instructions only.")
+        print("   ")
+        print("   To save a model:")
+        print("   checkpoint = {")
+        print("       'model_state_dict': model.state_dict(),")
+        print("       'config': {'modalities': ['vision'], 'num_classes': 10},")
+        print("   }")
+        print("   torch.save(checkpoint, 'model.pth')")
+        print("   ")
+        print("   To load a model:")
+        print("   brain = BrainInference.load('model.pth', device='cpu')")
+        return
     
-    # Save checkpoint
+    # Save checkpoint using existing model
     checkpoint_path = Path(tempfile.gettempdir()) / 'brain_demo.pth'
     
     print(f"\n💾 Saving model to {checkpoint_path}...")
     checkpoint = {
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': existing_model.state_dict(),
         'config': {
-            'modalities': ['vision'],
-            'output_type': 'classify',
+            'modalities': getattr(existing_model, 'modalities', ['vision']),
+            'output_type': getattr(existing_model, 'output_type', 'classify'),
             'num_classes': 10,
         },
         'epoch': 100,
@@ -1084,6 +1039,9 @@ def demo_save_load():
     }
     torch.save(checkpoint, checkpoint_path)
     print("   Model saved!")
+    
+    # Clean up existing references before loading
+    cleanup_memory()
     
     # Load checkpoint
     print("\n📂 Loading model...")
@@ -1097,16 +1055,17 @@ def demo_save_load():
     
     # Cleanup
     checkpoint_path.unlink()
+    del brain
+    cleanup_memory()
 
 
-def demo_with_class_names():
+def demo_with_class_names(existing_model=None):
     """Demo: Using class names for readable predictions."""
     print("\n" + "=" * 70)
     print("9. CLASS NAMES DEMO")
     print("=" * 70)
     
     from brain_ai.inference import BrainInference
-    from brain_ai.system import create_brain_ai
     
     # Define class names (e.g., CIFAR-10)
     class_names = [
@@ -1114,16 +1073,17 @@ def demo_with_class_names():
         'dog', 'frog', 'horse', 'ship', 'truck',
     ]
     
-    # Create model
-    model = create_brain_ai(
-        modalities=['vision'],
-        output_type='classify',
-        num_classes=len(class_names),
-        device='cpu',
-    )
+    if existing_model is None:
+        print("\n⚠️ No model provided - showing class names usage only.")
+        print(f"   Class names available: {class_names}")
+        print("   ")
+        print("   To use class names:")
+        print("   brain = BrainInference(model=model, class_names=class_names)")
+        print("   result.prediction  # Returns 'cat' instead of 3")
+        return
     
-    # Create inference wrapper with class names
-    brain = BrainInference(model=model, device='cpu', class_names=class_names)
+    # Create inference wrapper with class names using existing model
+    brain = BrainInference(model=existing_model, device='cpu', class_names=class_names)
     
     # Run inference
     print("\n🏷️ Classification with class names...")
@@ -1139,10 +1099,10 @@ def demo_with_class_names():
     print(f"   Total classes: {len(class_names)}")
     print(f"   Class names: {class_names}")
     
-    # Multiple inference for class distribution
-    print(f"\n🎲 Random Input Class Distribution (10 samples):")
+    # Multiple inference for class distribution (reduced samples)
+    print(f"\n🎲 Random Input Class Distribution (5 samples):")
     predictions = []
-    for _ in range(10):
+    for _ in range(5):
         img = torch.randn(1, 3, 224, 224)
         res = brain.infer({'vision': img})
         predictions.append(res.prediction)
@@ -1151,6 +1111,9 @@ def demo_with_class_names():
     dist = Counter(predictions)
     print(f"   Distribution: {dict(dist)}")
     print(f"   Note: Random inputs should give ~uniform distribution on untrained model")
+    
+    del brain
+    cleanup_memory()
 
 
 def generate_llm_training_guide():
@@ -1296,27 +1259,37 @@ def main():
         
         # 2. Direct inference (with detailed output analysis)
         demo_direct_inference(model)
+        cleanup_memory()
         
-        # 3. Inference wrapper (with performance metrics)
-        brain = demo_inference_wrapper()
+        # 3. Inference wrapper (with performance metrics) - reuse model
+        brain = demo_inference_wrapper(existing_model=model)
+        cleanup_memory()
         
-        # 4. Text generation
+        # 4. Text generation (info only to save memory)
         demo_generation()
         
-        # 5. Control agent
+        # 5. Control agent (info only to save memory)
         demo_control_agent()
         
         # 6. Internal states (with detailed brain state analysis)
         demo_internal_states(brain)
+        cleanup_memory()
         
         # 7. Batch processing (with efficiency metrics)
         demo_batch_processing(brain)
+        cleanup_memory()
         
-        # 8. Save/Load
-        demo_save_load()
+        # 8. Save/Load - reuse existing model
+        demo_save_load(existing_model=model)
+        cleanup_memory()
         
-        # 9. Class names
-        demo_with_class_names()
+        # 9. Class names - reuse existing model
+        demo_with_class_names(existing_model=model)
+        cleanup_memory()
+        
+        # Clean up main model
+        del model, brain
+        cleanup_memory()
         
         # 10. Generate comprehensive training guide for LLM
         generate_llm_training_guide()
