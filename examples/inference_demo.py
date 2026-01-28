@@ -1259,6 +1259,13 @@ def main():
         
         # 2. Direct inference (with detailed output analysis)
         demo_direct_inference(model)
+        
+        # Reset model state to avoid batch size mismatch between demos
+        if hasattr(model, 'reset_state'):
+            model.reset_state()
+        if hasattr(model, 'workspace') and model.workspace is not None:
+            if hasattr(model.workspace, 'reset_state'):
+                model.workspace.reset_state()
         cleanup_memory()
         
         # 3. Inference wrapper (with performance metrics) - reuse model

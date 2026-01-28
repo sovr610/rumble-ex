@@ -370,6 +370,11 @@ class GlobalWorkspace(nn.Module):
 
         # 4. Integrate with previous context via working memory
         if self.prev_context is not None:
+            # Check batch size compatibility - reset if mismatch
+            if self.prev_context.shape[0] != workspace_content.shape[0]:
+                self.prev_context = None
+        
+        if self.prev_context is not None:
             # Combine current with previous
             combined = torch.cat([workspace_content, self.prev_context], dim=-1)
             integrated = self.integration(combined)
