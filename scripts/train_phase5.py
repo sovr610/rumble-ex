@@ -153,7 +153,7 @@ class GridWorldEnv:
     
     def _get_observation(self) -> torch.Tensor:
         """Get current observation (partial, egocentric)."""
-        obs = np.zeros(self.obs_dim)
+        obs = np.zeros(self.obs_dim, dtype=np.float32)
         
         # Encode agent position (normalized)
         obs[0] = self.agent_pos[0] / self.size
@@ -174,18 +174,33 @@ class GridWorldEnv:
                 pos = self.agent_pos + np.array([dx, dy])
                 idx = 5 + (dx + 1) * 3 + (dy + 1)
                 
-                if 0 <= pos[0] < self.size and 0 <= pos[1] < self.size:
-                    # Check if goal nearby
-                    if np.array_equal(pos, self.goal_pos):
-                        obs[idx] = 1.0
+                if idx < self.obs_dim:  # Bounds check
+                    if 0 <= pos[0] < self.size and 0 <= pos[1] < self.size:
+                        if np.array_equal(pos, self.goal_pos):
+                            obs[idx] = 1.0
+                        else:
+                            obs[idx] = 0.5
                     else:
-                        obs[idx] = 0.5  # Valid position
-                else:
-                    obs[idx] = -1.0  # Wall/boundary
+                        obs[idx] = -1.0
+        
+        # Extended features for larger obs_dim
+        if self.obs_dim > 64:
+            # Add more spatial encoding using sine/cosine positional features
+            base_idx = 14
+            num_extra = min(self.obs_dim - base_idx, 50)
+            for i in range(num_extra):
+                freq = (i + 1) * 0.1
+                obs[base_idx + i] = np.sin(freq * self.agent_pos[0] + freq * self.agent_pos[1])
+            
+            # Goal direction encoding
+            if base_idx + 50 < self.obs_dim:
+                angle = np.arctan2(rel_goal[1], rel_goal[0])
+                for i in range(min(20, self.obs_dim - base_idx - 50)):
+                    obs[base_idx + 50 + i] = np.sin(angle * (i + 1))
         
         # Add noise for partial observability
         if self.stochastic:
-            obs += np.random.randn(self.obs_dim) * 0.05
+            obs += np.random.randn(self.obs_dim).astype(np.float32) * 0.05
         
         return torch.tensor(obs, dtype=torch.float32)
     
@@ -563,14 +578,18 @@ def main():
     print(f"  - Epistemic weight: {epistemic_weight}")
     print(f"  - Hidden dim: {hidden_dim}")
     
-    # Create environment (smaller grid = easier to learn)
-    env = GridWorldEnv(size=grid_size, stochastic=False)  # Deterministic for easier learning
-    print(f"\nCreated GridWorld environment: {env.size}x{env.size} (deterministic)")
+    # Scale observation and state dimensions based on mode
+    obs_dim = 64 if args.mode == "dev" else 256
+    state_dim = 32 if args.mode == "dev" else 128
+    
+    # Create environment with matching observation dimension
+    env = GridWorldEnv(size=grid_size, obs_dim=obs_dim, stochastic=False)
+    print(f"\nCreated GridWorld environment: {env.size}x{env.size} (deterministic), obs_dim={obs_dim}")
     
     # Create agent with mode-specific dimensions
     agent = NeuralActiveInferenceAgent(
-        obs_dim=64 if args.mode == "dev" else 256,
-        state_dim=32 if args.mode == "dev" else 128,
+        obs_dim=obs_dim,
+        state_dim=state_dim,
         action_dim=5,
         hidden_dim=hidden_dim,
         planning_horizon=planning_horizon,
