@@ -93,6 +93,13 @@ class GRUWorkingMemory(nn.Module):
         if x.dim() == 2:
             x = x.unsqueeze(1)  # Add sequence dimension
 
+        # Check batch size compatibility - reset if mismatch
+        batch_size = x.shape[0]
+        if self.hidden_state is not None:
+            # GRU hidden state shape: (num_layers, batch, hidden_dim)
+            if self.hidden_state.shape[1] != batch_size:
+                self.hidden_state = None
+
         # Forward through GRU
         output, self.hidden_state = self.gru(x, self.hidden_state)
 
@@ -211,6 +218,17 @@ class LiquidWorkingMemory(nn.Module):
         # Handle input dimensions
         if x.dim() == 2:
             x = x.unsqueeze(1)  # Add sequence dimension
+
+        # Check batch size compatibility - reset if mismatch
+        batch_size = x.shape[0]
+        if self.hidden_state is not None:
+            # hidden_state can be a tuple or tensor depending on RNN type
+            if isinstance(self.hidden_state, (tuple, list)):
+                if self.hidden_state[0].shape[0] != batch_size:
+                    self.hidden_state = None
+            elif hasattr(self.hidden_state, 'shape'):
+                if self.hidden_state.shape[0] != batch_size:
+                    self.hidden_state = None
 
         # Forward through liquid network
         if self.mode == "cfc":

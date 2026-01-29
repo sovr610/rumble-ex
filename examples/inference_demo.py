@@ -1303,6 +1303,13 @@ def main():
         demo_save_load(existing_model=model)
         cleanup_memory()
         
+        # Reset model state before class names demo (batch size may have changed)
+        if hasattr(model, 'reset_state'):
+            model.reset_state()
+        if hasattr(model, 'workspace') and model.workspace is not None:
+            if hasattr(model.workspace, 'reset_state'):
+                model.workspace.reset_state()
+        
         # 9. Class names - reuse existing model
         demo_with_class_names(existing_model=model)
         cleanup_memory()
