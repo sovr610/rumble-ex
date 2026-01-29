@@ -719,35 +719,41 @@ def demo_inference_wrapper(existing_model=None):
     if torch.cuda.is_available():
         print(f"   GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
     
-    # Text inference
-    print("\n📝 Text inference...")
-    text_input = "The brain processes information hierarchically."
-    result = brain.classify_text(text_input)
-    
-    print(f"\n   📊 Text Inference Results:")
-    print(f"   Input: '{text_input}'")
-    print(f"   Input length: {len(text_input)} characters, ~{len(text_input.split())} words")
-    print(f"   Prediction: {result.prediction}")
-    print(f"   Confidence: {result.confidence:.2%}")
-    print(f"   Top-5 classes: {result.top_k_classes}")
-    
-    # Multimodal inference
-    print("\n🔀 Multimodal inference...")
-    result = brain.infer({
-        'vision': vision_input,
-        'text': text_input,
-    })
-    
-    print(f"\n   📊 Multimodal Inference Results:")
-    print(f"   Modalities used: {result.modalities_used}")
-    print(f"   Prediction: {result.prediction}")
-    print(f"   Confidence: {result.confidence:.2%}")
-    print(f"   Inference time: {result.inference_time_ms:.1f}ms")
-    
-    # Cross-modal comparison
-    print(f"\n   🔄 Cross-Modal Analysis:")
-    print(f"   Vision-only and Text-only predictions may differ due to modality biases")
-    print(f"   Multimodal fusion typically improves robustness")
+    # Text inference - only if model supports text
+    if 'text' in brain.model.modalities:
+        print("\n📝 Text inference...")
+        text_input = "The brain processes information hierarchically."
+        result = brain.classify_text(text_input)
+        
+        print(f"\n   📊 Text Inference Results:")
+        print(f"   Input: '{text_input}'")
+        print(f"   Input length: {len(text_input)} characters, ~{len(text_input.split())} words")
+        print(f"   Prediction: {result.prediction}")
+        print(f"   Confidence: {result.confidence:.2%}")
+        print(f"   Top-5 classes: {result.top_k_classes}")
+        
+        # Multimodal inference
+        print("\n🔀 Multimodal inference...")
+        result = brain.infer({
+            'vision': vision_input,
+            'text': text_input,
+        })
+        
+        print(f"\n   📊 Multimodal Inference Results:")
+        print(f"   Modalities used: {result.modalities_used}")
+        print(f"   Prediction: {result.prediction}")
+        print(f"   Confidence: {result.confidence:.2%}")
+        print(f"   Inference time: {result.inference_time_ms:.1f}ms")
+        
+        # Cross-modal comparison
+        print(f"\n   🔄 Cross-Modal Analysis:")
+        print(f"   Vision-only and Text-only predictions may differ due to modality biases")
+        print(f"   Multimodal fusion typically improves robustness")
+    else:
+        print("\n📝 Text inference...")
+        print("   ⚠️ Skipped: Model only supports vision modality")
+        print(f"   Supported modalities: {brain.model.modalities}")
+        print("   To enable text inference, create model with modalities=['vision', 'text']")
     
     return brain
 
