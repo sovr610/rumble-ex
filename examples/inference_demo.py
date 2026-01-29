@@ -1013,7 +1013,6 @@ def demo_save_load(existing_model=None):
     print("=" * 70)
     
     import tempfile
-    from brain_ai.inference import BrainInference
     
     if existing_model is None:
         print("\n⚠️ No model provided - showing save/load instructions only.")
@@ -1044,25 +1043,33 @@ def demo_save_load(existing_model=None):
         'best_accuracy': 0.95,
     }
     torch.save(checkpoint, checkpoint_path)
-    print("   Model saved!")
     
-    # Clean up existing references before loading
+    # Get file size
+    file_size = checkpoint_path.stat().st_size
+    print(f"   Model saved! Size: {file_size / 1024 / 1024:.2f} MB")
+    
+    # Verify the checkpoint can be read (without loading full model to save memory)
+    print("\n📂 Verifying checkpoint...")
+    loaded_checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    print(f"   ✓ Checkpoint contains {len(loaded_checkpoint['model_state_dict'])} parameter tensors")
+    print(f"   ✓ Config: {loaded_checkpoint['config']}")
+    print(f"   ✓ Epoch: {loaded_checkpoint['epoch']}")
+    print(f"   ✓ Best accuracy: {loaded_checkpoint['best_accuracy']}")
+    
+    # Clean up checkpoint data
+    del loaded_checkpoint
     cleanup_memory()
     
-    # Load checkpoint
-    print("\n📂 Loading model...")
-    brain = BrainInference.load(str(checkpoint_path), device='cpu')
-    print("   Model loaded!")
-    
-    # Verify
-    test_input = torch.randn(1, 3, 224, 224)
-    result = brain.infer({'vision': test_input})
-    print(f"   Verification: prediction={result.prediction}, confidence={result.confidence:.2%}")
+    # Show how to load (without actually loading to save memory)
+    print("\n📝 To load this model:")
+    print("   from brain_ai.inference import BrainInference")
+    print(f"   brain = BrainInference.load('{checkpoint_path}', device='cpu')")
+    print("   result = brain.infer({{'vision': image}})")
+    print("\n   (Skipping actual load to conserve memory - model already in use)")
     
     # Cleanup
     checkpoint_path.unlink()
-    del brain
-    cleanup_memory()
+    print(f"\n   Cleaned up temporary checkpoint file")
 
 
 def demo_with_class_names(existing_model=None):
