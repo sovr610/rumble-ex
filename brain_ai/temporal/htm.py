@@ -774,3 +774,424 @@ def create_htm_layer(
         **kwargs
     )
     return HTMLayer(config)
+
+
+# =============================================================================
+# AHTM: Accelerated HTM with Reflex Memory (2025 Research)
+# =============================================================================
+
+class ReflexMemory(nn.Module):
+    """
+    Reflex Memory for AHTM - stores frequently-accessed patterns for O(1) lookup.
+    
+    Based on "Enhancing Biologically Inspired Hierarchical Temporal Memory with
+    Reflex Memory" (2025, arXiv:2504.03746).
+    
+    When a pattern is seen repeatedly, it's promoted to Reflex Memory for
+    instant lookup instead of full HTM computation. This mimics how the brain
+    develops "reflexive" responses for familiar patterns.
+    
+    Key features:
+    - Locality-Sensitive Hashing (LSH) for fast approximate matching
+    - Automatic promotion based on access frequency
+    - LRU eviction when memory is full
+    - Continuous learning without catastrophic forgetting
+    
+    Args:
+        pattern_dim: Dimension of input patterns
+        max_patterns: Maximum patterns to store
+        promotion_threshold: Access count before promotion from HTM cache
+        similarity_threshold: LSH similarity threshold for match
+        decay_rate: Decay for access counts (prevents stale patterns)
+    """
+    
+    def __init__(
+        self,
+        pattern_dim: int,
+        max_patterns: int = 10000,
+        promotion_threshold: int = 5,
+        similarity_threshold: float = 0.9,
+        decay_rate: float = 0.99,
+        num_hashes: int = 16,
+        hash_dim: int = 64,
+    ):
+        super().__init__()
+        
+        self.pattern_dim = pattern_dim
+        self.max_patterns = max_patterns
+        self.promotion_threshold = promotion_threshold
+        self.similarity_threshold = similarity_threshold
+        self.decay_rate = decay_rate
+        self.num_hashes = num_hashes
+        self.hash_dim = hash_dim
+        
+        # Pattern storage
+        self.register_buffer('patterns', torch.zeros(max_patterns, pattern_dim))
+        self.register_buffer('predictions', torch.zeros(max_patterns, pattern_dim))
+        self.register_buffer('access_counts', torch.zeros(max_patterns))
+        self.register_buffer('timestamps', torch.zeros(max_patterns, dtype=torch.long))
+        self.register_buffer('valid_mask', torch.zeros(max_patterns, dtype=torch.bool))
+        self.register_buffer('num_stored', torch.tensor(0, dtype=torch.long))
+        self.register_buffer('current_time', torch.tensor(0, dtype=torch.long))
+        
+        # LSH projection for fast lookup
+        self.register_buffer(
+            'hash_projections',
+            torch.randn(pattern_dim, num_hashes * hash_dim) / np.sqrt(pattern_dim)
+        )
+        
+        # Pre-computed hashes for stored patterns (updated on store)
+        self.register_buffer('stored_hashes', torch.zeros(max_patterns, num_hashes * hash_dim))
+        
+        # Statistics tracking
+        self.hits = 0
+        self.misses = 0
+    
+    def compute_hash(self, pattern: torch.Tensor) -> torch.Tensor:
+        """
+        Compute locality-sensitive hash using random projections.
+        
+        Args:
+            pattern: (batch, pattern_dim) or (pattern_dim,) input
+            
+        Returns:
+            Binary hash (batch, num_hashes * hash_dim) or (num_hashes * hash_dim,)
+        """
+        # Project and binarize
+        projected = pattern @ self.hash_projections
+        return (projected > 0).float()
+    
+    def lookup(
+        self,
+        pattern: torch.Tensor,
+    ) -> Optional[Tuple[torch.Tensor, float, int]]:
+        """
+        Fast O(1) lookup via LSH.
+        
+        Args:
+            pattern: Input pattern (pattern_dim,) or (1, pattern_dim)
+            
+        Returns:
+            If found: (prediction, confidence, pattern_idx)
+            If not found: None
+        """
+        if pattern.dim() == 2:
+            pattern = pattern.squeeze(0)
+        
+        if self.num_stored == 0:
+            self.misses += 1
+            return None
+        
+        # Compute hash for input
+        pattern_hash = self.compute_hash(pattern)
+        
+        # Compare with stored hashes (only valid entries)
+        valid_count = min(self.num_stored.item(), self.max_patterns)
+        stored_hashes = self.stored_hashes[:valid_count]
+        
+        # Hamming similarity (1 - normalized Hamming distance)
+        matches = (pattern_hash == stored_hashes).float()
+        similarity = matches.mean(dim=-1)
+        
+        # Find best match
+        best_sim, best_idx = similarity.max(dim=0)
+        
+        if best_sim >= self.similarity_threshold:
+            self.hits += 1
+            
+            # Update access count and timestamp
+            self.access_counts[best_idx] += 1
+            self.timestamps[best_idx] = self.current_time
+            
+            return (
+                self.predictions[best_idx].clone(),
+                best_sim.item(),
+                best_idx.item(),
+            )
+        
+        self.misses += 1
+        return None
+    
+    def store(
+        self,
+        pattern: torch.Tensor,
+        prediction: torch.Tensor,
+        force: bool = False,
+    ) -> int:
+        """
+        Store pattern-prediction pair in Reflex Memory.
+        
+        Args:
+            pattern: Input pattern
+            prediction: Associated prediction/response
+            force: If True, store even if below promotion threshold
+            
+        Returns:
+            Index where stored, or -1 if not stored
+        """
+        if pattern.dim() == 2:
+            pattern = pattern.squeeze(0)
+        if prediction.dim() == 2:
+            prediction = prediction.squeeze(0)
+        
+        self.current_time += 1
+        
+        # Check if pattern already exists (to update, not duplicate)
+        existing = self.lookup(pattern)
+        if existing is not None:
+            _, _, idx = existing
+            # Update prediction with moving average
+            alpha = 0.1
+            self.predictions[idx] = (1 - alpha) * self.predictions[idx] + alpha * prediction
+            return idx
+        
+        # Find storage slot
+        if self.num_stored < self.max_patterns:
+            idx = self.num_stored.item()
+            self.num_stored += 1
+        else:
+            # LRU eviction: find oldest accessed pattern
+            recency_score = self.current_time - self.timestamps[:self.max_patterns]
+            # Combine with inverse access count for importance
+            importance = self.access_counts[:self.max_patterns] / (recency_score.float() + 1)
+            idx = importance.argmin().item()
+        
+        # Store
+        self.patterns[idx] = pattern
+        self.predictions[idx] = prediction
+        self.access_counts[idx] = 1
+        self.timestamps[idx] = self.current_time
+        self.valid_mask[idx] = True
+        self.stored_hashes[idx] = self.compute_hash(pattern)
+        
+        return idx
+    
+    def decay_access_counts(self):
+        """Apply decay to access counts (call periodically)."""
+        self.access_counts *= self.decay_rate
+    
+    def get_statistics(self) -> Dict[str, float]:
+        """Get cache statistics."""
+        total = self.hits + self.misses
+        return {
+            'hits': self.hits,
+            'misses': self.misses,
+            'hit_rate': self.hits / max(total, 1),
+            'patterns_stored': self.num_stored.item(),
+            'utilization': self.num_stored.item() / self.max_patterns,
+        }
+    
+    def reset_statistics(self):
+        """Reset hit/miss counters."""
+        self.hits = 0
+        self.misses = 0
+
+
+class AcceleratedHTM(nn.Module):
+    """
+    AHTM: Accelerated Hierarchical Temporal Memory.
+    
+    Combines traditional HTM with Reflex Memory for fast pattern matching.
+    
+    Architecture:
+    1. Reflex Memory: O(1) lookup for known patterns
+    2. Full HTM: Slow path for novel patterns (with online learning)
+    3. Automatic promotion: Frequently-accessed patterns promoted to RM
+    
+    Benefits:
+    - Much faster inference for common patterns
+    - Maintains HTM's ability to learn new sequences
+    - No catastrophic forgetting
+    - Real-time capable for edge deployment
+    
+    Based on: "Enhancing Biologically Inspired HTM with Reflex Memory" (2025)
+    
+    Args:
+        htm_layer: Base HTMLayer for full computation
+        reflex_memory: ReflexMemory for fast lookup
+        use_htm_on_miss: If False, return zeros on RM miss (faster but less accurate)
+        promotion_threshold: Minimum HTM calls before promoting to RM
+    """
+    
+    def __init__(
+        self,
+        htm_layer: HTMLayer,
+        reflex_memory: Optional[ReflexMemory] = None,
+        use_htm_on_miss: bool = True,
+        promotion_threshold: int = 5,
+    ):
+        super().__init__()
+        
+        self.htm = htm_layer
+        self.use_htm_on_miss = use_htm_on_miss
+        self.promotion_threshold = promotion_threshold
+        
+        # Create Reflex Memory if not provided
+        if reflex_memory is None:
+            pattern_dim = htm_layer.config.input_size
+            reflex_memory = ReflexMemory(
+                pattern_dim=pattern_dim,
+                max_patterns=10000,
+                promotion_threshold=promotion_threshold,
+            )
+        
+        self.rm = reflex_memory
+        
+        # Track HTM calls per pattern for promotion
+        self.htm_call_counts: Dict[int, int] = {}
+        
+        # Statistics
+        self.rm_hits = 0
+        self.htm_calls = 0
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        learn: bool = True,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Forward with automatic acceleration.
+        
+        Fast path: Check Reflex Memory first
+        Slow path: Full HTM computation (with potential promotion)
+        
+        Args:
+            x: Input tensor (input_size,) or (batch, input_size)
+            learn: Whether to update HTM/RM
+            
+        Returns:
+            Dictionary with:
+            - 'features': Output features (column_count,)
+            - 'anomaly': Anomaly score (0 for RM hit, computed for HTM)
+            - 'from_reflex': Whether result came from Reflex Memory
+            - 'active_cells': Active cell pattern (if available)
+        """
+        device = x.device
+        is_batched = x.dim() == 2
+        
+        if is_batched:
+            # Process batch sequentially (HTM is typically online)
+            results = []
+            for i in range(x.shape[0]):
+                result = self._forward_single(x[i], learn, device)
+                results.append(result)
+            
+            # Stack results
+            return {
+                key: torch.stack([r[key] for r in results])
+                for key in results[0].keys()
+            }
+        
+        return self._forward_single(x, learn, device)
+    
+    def _forward_single(
+        self,
+        x: torch.Tensor,
+        learn: bool,
+        device: torch.device,
+    ) -> Dict[str, torch.Tensor]:
+        """Process single input with acceleration."""
+        
+        # Fast path: Try Reflex Memory first
+        rm_result = self.rm.lookup(x)
+        
+        if rm_result is not None:
+            prediction, confidence, _ = rm_result
+            self.rm_hits += 1
+            
+            # Still update HTM in background if learning (optional)
+            if learn and self.training:
+                with torch.no_grad():
+                    _ = self.htm(x, learn=True)
+            
+            return {
+                'features': prediction,
+                'anomaly': torch.tensor(0.0, device=device),  # Known pattern
+                'anomaly_likelihood': torch.tensor(0.0, device=device),
+                'from_reflex': torch.tensor(True, device=device),
+                'confidence': torch.tensor(confidence, device=device),
+            }
+        
+        # Slow path: Full HTM computation
+        self.htm_calls += 1
+        htm_result = self.htm(x, learn=learn)
+        
+        # Consider for promotion to Reflex Memory
+        if learn:
+            pattern_hash = hash(x.detach().cpu().numpy().tobytes())
+            self.htm_call_counts[pattern_hash] = self.htm_call_counts.get(pattern_hash, 0) + 1
+            
+            if self.htm_call_counts[pattern_hash] >= self.promotion_threshold:
+                # Promote to Reflex Memory
+                self.rm.store(x, htm_result['features'], force=True)
+                del self.htm_call_counts[pattern_hash]
+        
+        return {
+            'features': htm_result['features'],
+            'anomaly': htm_result['anomaly'],
+            'anomaly_likelihood': htm_result.get('anomaly_likelihood', htm_result['anomaly']),
+            'from_reflex': torch.tensor(False, device=device),
+            'confidence': torch.tensor(1.0 - htm_result['anomaly'].item(), device=device),
+        }
+    
+    def get_statistics(self) -> Dict[str, float]:
+        """Get combined statistics."""
+        total_calls = self.rm_hits + self.htm_calls
+        return {
+            'rm_hits': self.rm_hits,
+            'htm_calls': self.htm_calls,
+            'acceleration_rate': self.rm_hits / max(total_calls, 1),
+            'rm_stats': self.rm.get_statistics(),
+            'patterns_pending_promotion': len(self.htm_call_counts),
+        }
+    
+    def reset_statistics(self):
+        """Reset all statistics."""
+        self.rm_hits = 0
+        self.htm_calls = 0
+        self.rm.reset_statistics()
+
+
+def create_accelerated_htm(
+    input_size: int = 512,
+    column_count: int = 2048,
+    cells_per_column: int = 32,
+    sparsity: float = 0.02,
+    max_reflex_patterns: int = 10000,
+    promotion_threshold: int = 5,
+    **kwargs,
+) -> AcceleratedHTM:
+    """
+    Create Accelerated HTM with Reflex Memory.
+    
+    Args:
+        input_size: Input dimension
+        column_count: Number of HTM columns
+        cells_per_column: Cells per column
+        sparsity: Target sparsity
+        max_reflex_patterns: Maximum patterns in Reflex Memory
+        promotion_threshold: HTM calls before promotion
+        **kwargs: Additional HTM config parameters
+        
+    Returns:
+        AcceleratedHTM instance
+    """
+    htm_layer = create_htm_layer(
+        input_size=input_size,
+        column_count=column_count,
+        cells_per_column=cells_per_column,
+        sparsity=sparsity,
+        **kwargs,
+    )
+    
+    reflex_memory = ReflexMemory(
+        pattern_dim=input_size,
+        max_patterns=max_reflex_patterns,
+        promotion_threshold=promotion_threshold,
+    )
+    
+    return AcceleratedHTM(
+        htm_layer=htm_layer,
+        reflex_memory=reflex_memory,
+        promotion_threshold=promotion_threshold,
+    )

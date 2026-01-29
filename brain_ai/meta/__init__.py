@@ -22,6 +22,15 @@ from .maml import (
     MetaLearner,
     InnerLoopOptimizer,
     create_meta_learner,
+    # MAML++ and Task2Vec (2025)
+    MAMLPlusPlusConfig,
+    PerLayerPerStepLR,
+    TaskEncoder,
+    MAMLPlusPlus,
+    Task2Vec,
+    TaskAwareMetaLearner,
+    create_maml_plus_plus,
+    create_task2vec,
 )
 from .eligibility import (
     EligibilityTrace,
@@ -51,6 +60,15 @@ __all__ = [
     'MetaLearner',
     'InnerLoopOptimizer',
     'create_meta_learner',
+    # MAML++ and Task2Vec (2025)
+    'MAMLPlusPlusConfig',
+    'PerLayerPerStepLR',
+    'TaskEncoder',
+    'MAMLPlusPlus',
+    'Task2Vec',
+    'TaskAwareMetaLearner',
+    'create_maml_plus_plus',
+    'create_task2vec',
     # Eligibility Traces
     'EligibilityTrace',
     'EligibilityConfig',

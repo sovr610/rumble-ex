@@ -45,6 +45,11 @@ class SNNConfig:
     - Larger hidden layers for capacity
     - More timesteps for better temporal dynamics
     - Optimized surrogate gradient
+    
+    2025 Improvements:
+    - Learnable synaptic delays (use_learnable_delays)
+    - Heterogeneous time constants (use_heterogeneous_tau)
+    - ProbSpikes loss for spike-based learning
     """
     beta: float = 0.95  # Higher membrane decay for longer memory
     num_timesteps: int = 50  # More timesteps for rich dynamics
@@ -53,6 +58,18 @@ class SNNConfig:
     dropout: float = 0.1  # Lower dropout for large models
     # Scaled hidden sizes: ~500M params with 4 layers
     hidden_sizes: list[int] = field(default_factory=lambda: [4096, 4096, 2048, 2048])
+    
+    # 2025 Improvements (from research)
+    use_learnable_delays: bool = True  # Learnable synaptic delays
+    max_delay: int = 16  # Maximum delay taps for AdvancedLIFNeuron
+    use_heterogeneous_tau: bool = True  # Per-neuron time constants
+    use_adaptive_threshold: bool = False  # Adaptive threshold (optional)
+    
+    # Loss configuration
+    use_probspikes_loss: bool = True  # Cross-entropy on spike counts
+    spike_rate_target: float = 0.1  # Target 10% spike rate
+    spike_rate_weight: float = 0.01  # Regularization weight
+    temporal_consistency_weight: float = 0.001  # Smooth membrane evolution
 
 
 @dataclass
@@ -111,6 +128,11 @@ class HTMConfig:
     - Larger column count for more patterns
     - More cells per column for longer sequences
     - LSTM fallback sized appropriately
+    
+    2025 Improvements:
+    - Accelerated HTM with Reflex Memory (use_reflex_memory)
+    - LSH-based O(1) pattern lookup
+    - Automatic pattern promotion
     """
     column_count: int = 16384  # 8x increase for production
     cells_per_column: int = 64  # 2x for longer sequences
@@ -123,6 +145,13 @@ class HTMConfig:
     use_fallback: bool = True
     lstm_hidden_dim: int = 4096  # Match workspace dim
     lstm_num_layers: int = 4  # Deeper LSTM
+    
+    # 2025 Improvements: Accelerated HTM with Reflex Memory
+    use_reflex_memory: bool = True  # Enable AHTM acceleration
+    reflex_num_tables: int = 8  # LSH hash tables
+    reflex_bits_per_hash: int = 12  # Bits per hash function
+    reflex_promotion_threshold: int = 5  # Promote after 5 matches
+    reflex_capacity: int = 100000  # Max patterns in Reflex Memory
 
 
 @dataclass
@@ -133,6 +162,11 @@ class WorkspaceConfig:
     - Large workspace for multi-modal integration
     - More heads for fine-grained attention
     - Liquid NN for working memory
+    
+    2025 Improvements:
+    - Selection-Broadcast cycle with ignition dynamics
+    - Iterative competition for workspace access
+    - Bidirectional broadcast with feedback
     """
     workspace_dim: int = 4096  # Match 7B LLM hidden
     num_heads: int = 32  # Multi-head attention
@@ -146,6 +180,14 @@ class WorkspaceConfig:
     # Cross-modal attention
     cross_modal_heads: int = 16
     cross_modal_layers: int = 6
+    
+    # 2025 Improvements: Selection-Broadcast Workspace
+    use_selection_broadcast: bool = True  # Use improved workspace
+    selection_rounds: int = 3  # Iterative selection rounds
+    ignition_threshold: float = 0.3  # Threshold for global ignition
+    broadcast_iterations: int = 2  # Broadcast refinement steps
+    broadcast_decay: float = 0.9  # Temporal decay of broadcast
+    use_confidence_gating: bool = True  # Gate output by confidence
 
 
 @dataclass
@@ -155,6 +197,11 @@ class DecisionConfig:
     Production scale: ~500M parameters
     - Active inference for principled action selection
     - Large output heads for many classes
+    
+    2025 Improvements:
+    - Three-component EFE (pragmatic + epistemic + instrumental)
+    - Empowerment as intrinsic motivation
+    - Amortized action selection for speed
     """
     hidden_dim: int = 4096
 
@@ -169,6 +216,13 @@ class DecisionConfig:
     text_vocab_size: int = 128000  # Match text encoder
     text_decoder_layers: int = 8  # Deeper decoder
     text_decoder_heads: int = 32
+    
+    # 2025 Improvements: Enhanced EFE
+    use_improved_efe: bool = True  # Three-component EFE
+    use_empowerment: bool = True  # Instrumental value (empowerment)
+    empowerment_weight: float = 0.1  # Weight for empowerment term
+    use_amortized_policy: bool = True  # Fast action selection
+    efe_num_samples: int = 32  # Monte Carlo samples for EFE
 
 
 @dataclass
@@ -178,6 +232,11 @@ class ReasoningConfig:
     Production scale: ~800M parameters
     - More reasoning steps for complex problems
     - Larger entity/predicate space
+    
+    2025 Improvements:
+    - Logic Tensor Networks for differentiable reasoning
+    - Real Logic with stable semantics
+    - Grounded predicates and functions
     """
     hidden_dim: int = 4096
     num_reasoning_steps: int = 16  # Deeper reasoning
@@ -191,6 +250,14 @@ class ReasoningConfig:
     # System 2 reasoning
     system2_layers: int = 8
     system2_heads: int = 16
+    
+    # 2025 Improvements: Logic Tensor Networks
+    use_ltn: bool = True  # Use Logic Tensor Networks
+    ltn_embedding_dim: int = 128  # Grounding space dimension
+    ltn_hidden_dim: int = 256  # Predicate network hidden dim
+    ltn_num_layers: int = 3  # Predicate network depth
+    ltn_p_forall: float = 2.0  # p-norm for universal quantifier
+    ltn_p_exists: float = 0.5  # p-norm for existential quantifier
 
 
 @dataclass
@@ -200,6 +267,11 @@ class MetaConfig:
     Production scale: ~100M parameters
     - Neuromodulation for plasticity control
     - MAML for few-shot adaptation
+    
+    2025 Improvements:
+    - MAML++ with per-layer per-step learning rates
+    - Multi-step loss for training stability
+    - Task2Vec for task embeddings and clustering
     """
     num_modulators: int = 8  # More neuromodulatory signals
 
@@ -214,6 +286,17 @@ class MetaConfig:
     
     # Continual learning
     ewc_lambda: float = 1000.0  # Elastic weight consolidation
+    
+    # 2025 Improvements: MAML++
+    use_maml_plus_plus: bool = True  # Use improved MAML
+    learn_inner_lr: bool = True  # Per-layer per-step LRs
+    multi_step_loss: bool = True  # Loss at each inner step
+    gradient_clipping: float = 1.0  # Clip inner gradients
+    
+    # 2025 Improvements: Task2Vec
+    use_task2vec: bool = True  # Task embeddings
+    task_embedding_dim: int = 256  # Task vector dimension
+    use_task_conditioning: bool = True  # Condition adaptation on task
 
 
 @dataclass

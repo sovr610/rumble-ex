@@ -325,3 +325,207 @@ class RecurrentLIFNeuron(nn.Module):
         self.prev_spk = spk
 
         return spk, self.mem
+
+
+class AdvancedLIFNeuron(nn.Module):
+    """
+    Advanced LIF Neuron with learnable delays and heterogeneous time constants.
+    
+    Based on latest research (2025) showing that:
+    - Learnable synaptic delays improve temporal coding
+    - Per-neuron heterogeneous time constants aid learning
+    - Adaptive surrogate gradients improve convergence
+    
+    References:
+    - Yu et al. (2025) "Beyond Rate Coding: Surrogate Gradients Enable Spike Timing Learning"
+    - Hammouamri et al. (2024) "Learning delays in SNNs"
+    
+    Args:
+        size: Number of neurons in the layer
+        beta_init: Initial membrane decay factor
+        threshold: Spike threshold
+        learnable_beta: If True, learn per-neuron time constants
+        max_delay: Maximum learnable delay (in timesteps)
+        use_delays: Enable learnable synaptic delays
+        use_adaptive_threshold: Enable activity-dependent threshold
+        surrogate: Surrogate gradient type
+    """
+    
+    def __init__(
+        self,
+        size: int,
+        beta_init: float = 0.9,
+        threshold: float = 1.0,
+        learnable_beta: bool = True,
+        max_delay: int = 10,
+        use_delays: bool = True,
+        use_adaptive_threshold: bool = False,
+        surrogate: str = "atan",
+    ):
+        super().__init__()
+        
+        self.size = size
+        self.max_delay = max_delay
+        self.use_delays = use_delays
+        self.use_adaptive_threshold = use_adaptive_threshold
+        self.spike_fn = get_surrogate(surrogate)
+        
+        # Heterogeneous time constants (per-neuron learnable beta)
+        # Use logit parameterization for unconstrained optimization
+        if learnable_beta:
+            # Initialize around beta_init
+            logit_beta = torch.log(torch.tensor(beta_init) / (1 - beta_init))
+            self.log_beta = nn.Parameter(
+                torch.full((size,), logit_beta.item()) + torch.randn(size) * 0.1
+            )
+        else:
+            self.register_buffer(
+                'log_beta',
+                torch.full((size,), torch.log(torch.tensor(beta_init) / (1 - beta_init)))
+            )
+        
+        # Learnable threshold
+        self.register_buffer('threshold_base', torch.tensor(threshold))
+        
+        # Learnable synaptic delays
+        if use_delays:
+            # Soft attention over delay taps
+            self.delay_weights = nn.Parameter(torch.zeros(size, max_delay))
+            # Initialize with slight preference for small delays
+            nn.init.normal_(self.delay_weights, mean=0, std=0.1)
+        else:
+            self.delay_weights = None
+        
+        # Adaptive threshold parameters
+        if use_adaptive_threshold:
+            self.adaptation_weight = nn.Parameter(torch.tensor(0.1))
+            self.adaptation_decay = nn.Parameter(torch.tensor(0.95))
+        
+        # State
+        self.mem = None
+        self.spike_history = None  # For delay mechanism
+        self.adaptation = None  # For adaptive threshold
+    
+    @property
+    def beta(self) -> torch.Tensor:
+        """Get per-neuron beta values constrained to (0, 1)."""
+        return torch.sigmoid(self.log_beta)
+    
+    def reset_mem(self):
+        """Reset all neuron states."""
+        self.mem = None
+        self.spike_history = None
+        self.adaptation = None
+    
+    def apply_delays(self, spike_history: torch.Tensor) -> torch.Tensor:
+        """
+        Apply learnable delays to spike history.
+        
+        Uses soft attention over delay taps to allow gradient flow.
+        
+        Args:
+            spike_history: (batch, time, neurons) spike tensor
+            
+        Returns:
+            Delayed input (batch, neurons)
+        """
+        if self.delay_weights is None or spike_history.shape[1] < self.max_delay:
+            # No delays or not enough history
+            return spike_history[:, -1]
+        
+        # Get last max_delay timesteps
+        recent_spikes = spike_history[:, -self.max_delay:]  # (batch, max_delay, neurons)
+        
+        # Soft attention over delay taps
+        delay_attn = torch.softmax(self.delay_weights, dim=-1)  # (neurons, max_delay)
+        
+        # Weighted sum over delay taps
+        # recent_spikes: (batch, max_delay, neurons)
+        # delay_attn: (neurons, max_delay)
+        # We need: (batch, neurons)
+        delayed = torch.einsum('bdn,nd->bn', recent_spikes, delay_attn)
+        
+        return delayed
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        mem: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Single timestep forward pass.
+        
+        Args:
+            x: Input current (batch, neurons)
+            mem: Optional membrane potential override
+            
+        Returns:
+            spk: Output spikes (batch, neurons)
+            mem: Updated membrane potential (batch, neurons)
+        """
+        batch_size = x.shape[0]
+        device = x.device
+        
+        # Initialize state if needed
+        if mem is not None:
+            self.mem = mem
+        
+        if self.mem is None:
+            self.mem = torch.zeros(batch_size, self.size, device=device)
+        
+        if self.spike_history is None and self.use_delays:
+            self.spike_history = torch.zeros(
+                batch_size, self.max_delay, self.size, device=device
+            )
+        
+        if self.adaptation is None and self.use_adaptive_threshold:
+            self.adaptation = torch.zeros(batch_size, self.size, device=device)
+        
+        # Apply delays if enabled
+        if self.use_delays and self.spike_history is not None:
+            delayed_input = self.apply_delays(self.spike_history)
+            x = x + 0.1 * delayed_input  # Recurrent delayed input
+        
+        # Per-neuron membrane dynamics with heterogeneous time constants
+        beta = self.beta  # (neurons,)
+        self.mem = beta.unsqueeze(0) * self.mem + x
+        
+        # Compute effective threshold (with adaptation if enabled)
+        if self.use_adaptive_threshold and self.adaptation is not None:
+            threshold = self.threshold_base + self.adaptation_weight * self.adaptation
+        else:
+            threshold = self.threshold_base
+        
+        # Generate spike
+        mem_shifted = self.mem - threshold
+        spk = self.spike_fn(mem_shifted)
+        
+        # Soft reset (subtract threshold where spiked)
+        self.mem = self.mem - spk * threshold
+        
+        # Update adaptation (moving average of spike activity)
+        if self.use_adaptive_threshold:
+            self.adaptation = self.adaptation_decay * self.adaptation + spk
+        
+        # Update spike history for delays
+        if self.use_delays and self.spike_history is not None:
+            self.spike_history = torch.cat([
+                self.spike_history[:, 1:],  # Remove oldest
+                spk.unsqueeze(1),  # Add newest
+            ], dim=1)
+        
+        return spk, self.mem
+    
+    def get_delay_distribution(self) -> torch.Tensor:
+        """Get the learned delay distribution for visualization."""
+        if self.delay_weights is None:
+            return None
+        return torch.softmax(self.delay_weights, dim=-1)
+    
+    def get_effective_delays(self) -> torch.Tensor:
+        """Get effective delay per neuron (expected delay)."""
+        if self.delay_weights is None:
+            return None
+        delay_dist = self.get_delay_distribution()
+        delays = torch.arange(self.max_delay, device=delay_dist.device).float()
+        return (delay_dist * delays).sum(dim=-1)

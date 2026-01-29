@@ -518,3 +518,525 @@ def create_global_workspace(
             config=config,
             modality_dims=modality_dims,
         )
+
+
+# =============================================================================
+# IMPROVED GLOBAL WORKSPACE: Selection-Broadcast with Ignition (2025)
+# =============================================================================
+
+@dataclass
+class SelectionBroadcastConfig:
+    """Configuration for Selection-Broadcast workspace."""
+    workspace_dim: int = 1024  # Increased default
+    num_heads: int = 16
+    capacity_limit: int = 7
+    dropout: float = 0.1
+    
+    # Selection parameters
+    ignition_threshold: float = 0.3  # Threshold for global ignition
+    selection_rounds: int = 3  # Iterative selection rounds
+    
+    # Broadcast parameters
+    broadcast_iterations: int = 2  # Broadcast refinement iterations
+    broadcast_decay: float = 0.9  # Temporal decay of broadcast
+    
+    # Working memory
+    memory_hidden_dim: int = 1024
+    memory_mode: str = "cfc"
+    
+    # Competition dynamics
+    competition_temperature: float = 0.5  # Lower = sharper competition
+    min_attention: float = 0.01
+    
+    # Meta-cognition
+    use_confidence_gating: bool = True  # Gate output by confidence
+
+
+class IterativeCompetition(nn.Module):
+    """
+    Multi-round competition with ignition dynamics.
+    
+    Implements the Selection phase of GWT with:
+    - Iterative refinement of salience scores
+    - Global ignition when activity exceeds threshold
+    - Winner-take-most dynamics with soft gating
+    
+    Based on 2025 research on neural global workspace implementations.
+    """
+    
+    def __init__(
+        self,
+        workspace_dim: int = 1024,
+        num_heads: int = 16,
+        selection_rounds: int = 3,
+        ignition_threshold: float = 0.3,
+        temperature: float = 0.5,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        
+        self.workspace_dim = workspace_dim
+        self.num_heads = num_heads
+        self.selection_rounds = selection_rounds
+        self.ignition_threshold = ignition_threshold
+        self.temperature = temperature
+        
+        # Self-attention for competition
+        self.attention = nn.MultiheadAttention(
+            embed_dim=workspace_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        
+        # Recurrent refinement
+        self.refine_gate = nn.Sequential(
+            nn.Linear(workspace_dim * 2, workspace_dim),
+            nn.Sigmoid(),
+        )
+        self.refine_update = nn.Sequential(
+            nn.Linear(workspace_dim * 2, workspace_dim),
+            nn.Tanh(),
+        )
+        
+        # Salience accumulator
+        self.salience_update = nn.GRUCell(workspace_dim, workspace_dim // 4)
+        self.salience_out = nn.Linear(workspace_dim // 4, 1)
+        
+        # Ignition detector
+        self.ignition_detector = nn.Sequential(
+            nn.Linear(workspace_dim, workspace_dim // 4),
+            nn.ReLU(),
+            nn.Linear(workspace_dim // 4, 1),
+            nn.Sigmoid(),
+        )
+        
+        self.norm = nn.LayerNorm(workspace_dim)
+    
+    def forward(
+        self,
+        features: torch.Tensor,
+        initial_saliences: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Iterative competition with ignition.
+        
+        Args:
+            features: (batch, num_items, workspace_dim)
+            initial_saliences: (batch, num_items, 1)
+            
+        Returns:
+            winners: Selected features
+            attention_weights: Final attention weights
+            info: Competition metrics
+        """
+        batch_size, num_items, _ = features.shape
+        device = features.device
+        
+        # Initialize salience hidden state
+        salience_h = torch.zeros(
+            batch_size * num_items,
+            self.workspace_dim // 4,
+            device=device
+        )
+        
+        current_features = features
+        saliences = initial_saliences.squeeze(-1)  # (batch, num_items)
+        
+        history = []
+        ignition_history = []
+        
+        for round_idx in range(self.selection_rounds):
+            # Self-attention among competitors
+            attended, attn_weights = self.attention(
+                current_features, current_features, current_features,
+                need_weights=True,
+            )
+            
+            # Update features with gated refinement (GRU-like)
+            combined = torch.cat([current_features, attended], dim=-1)
+            gate = self.refine_gate(combined)
+            update = self.refine_update(combined)
+            current_features = gate * current_features + (1 - gate) * update
+            
+            # Update saliences based on attention received
+            attention_received = attn_weights.sum(dim=1)  # How much attention each item got
+            
+            # GRU update for salience
+            flat_features = current_features.view(-1, self.workspace_dim)
+            salience_h = self.salience_update(flat_features, salience_h)
+            new_saliences = self.salience_out(salience_h).view(batch_size, num_items)
+            
+            saliences = 0.5 * saliences + 0.5 * new_saliences
+            
+            # Check for ignition
+            ignition = self.ignition_detector(current_features.mean(dim=1))
+            ignition_history.append(ignition)
+            
+            # Record history
+            history.append({
+                'saliences': saliences.clone(),
+                'ignition': ignition.clone(),
+            })
+            
+            # Early stopping on strong ignition
+            if ignition.mean() > self.ignition_threshold * 1.5:
+                break
+        
+        # Final attention weights
+        attention_weights = F.softmax(saliences / self.temperature, dim=-1)
+        
+        # Weight features
+        winners = current_features * attention_weights.unsqueeze(-1)
+        winners = self.norm(winners)
+        
+        # Check if global ignition occurred
+        final_ignition = ignition_history[-1]
+        global_ignition = (final_ignition > self.ignition_threshold).float()
+        
+        info = {
+            'ignition': final_ignition,
+            'global_ignition': global_ignition,
+            'selection_rounds': round_idx + 1,
+            'history': history,
+        }
+        
+        return winners, attention_weights, info
+
+
+class RefinedBroadcast(nn.Module):
+    """
+    Iterative broadcast with feedback integration.
+    
+    The broadcast phase sends winning content to all specialists,
+    but also receives feedback to refine the broadcast.
+    
+    This creates a two-way communication where:
+    1. Workspace content is projected to each modality
+    2. Specialists provide feedback on relevance
+    3. Broadcast is refined based on feedback
+    """
+    
+    def __init__(
+        self,
+        workspace_dim: int,
+        modality_dims: Dict[str, int],
+        broadcast_iterations: int = 2,
+        broadcast_decay: float = 0.9,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        
+        self.workspace_dim = workspace_dim
+        self.modality_dims = modality_dims
+        self.broadcast_iterations = broadcast_iterations
+        self.broadcast_decay = broadcast_decay
+        
+        # Forward projections (workspace -> modality)
+        self.forward_projections = nn.ModuleDict()
+        for name, dim in modality_dims.items():
+            self.forward_projections[name] = nn.Sequential(
+                nn.Linear(workspace_dim, workspace_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(workspace_dim, dim),
+            )
+        
+        # Feedback projections (modality -> workspace)
+        self.feedback_projections = nn.ModuleDict()
+        for name, dim in modality_dims.items():
+            self.feedback_projections[name] = nn.Sequential(
+                nn.Linear(dim, workspace_dim // 2),
+                nn.ReLU(),
+                nn.Linear(workspace_dim // 2, workspace_dim),
+            )
+        
+        # Feedback integration
+        self.feedback_gate = nn.Sequential(
+            nn.Linear(workspace_dim * 2, workspace_dim),
+            nn.Sigmoid(),
+        )
+        
+        self.norm = nn.LayerNorm(workspace_dim)
+    
+    def forward(
+        self,
+        workspace_content: torch.Tensor,
+        modality_states: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        """
+        Iterative broadcast with feedback.
+        
+        Args:
+            workspace_content: (batch, workspace_dim)
+            modality_states: Optional current states of specialists
+            
+        Returns:
+            broadcasts: Dict of signals per modality
+            refined_content: Workspace content after feedback
+        """
+        current_content = workspace_content
+        
+        for iteration in range(self.broadcast_iterations):
+            # Forward broadcast
+            broadcasts = {}
+            for name, projection in self.forward_projections.items():
+                broadcasts[name] = projection(current_content)
+            
+            # Collect feedback
+            feedback = torch.zeros_like(current_content)
+            num_feedbacks = 0
+            
+            if modality_states is not None:
+                for name, state in modality_states.items():
+                    if name in self.feedback_projections:
+                        fb = self.feedback_projections[name](state)
+                        feedback = feedback + fb
+                        num_feedbacks += 1
+            
+            if num_feedbacks > 0:
+                feedback = feedback / num_feedbacks
+                
+                # Gate the feedback
+                combined = torch.cat([current_content, feedback], dim=-1)
+                gate = self.feedback_gate(combined)
+                
+                # Integrate with decay
+                current_content = gate * current_content + (1 - gate) * feedback
+                current_content = self.norm(current_content)
+                
+                # Apply temporal decay
+                current_content = current_content * self.broadcast_decay + \
+                                  workspace_content * (1 - self.broadcast_decay)
+        
+        return broadcasts, current_content
+
+
+class SelectionBroadcastWorkspace(nn.Module):
+    """
+    Improved Global Workspace with explicit Selection-Broadcast cycle.
+    
+    Based on 2025 research on neural implementations of Global Workspace Theory.
+    
+    Key improvements over base GlobalWorkspace:
+    1. Iterative selection with ignition dynamics
+    2. Bidirectional broadcast with feedback
+    3. Confidence-gated output
+    4. Larger default dimensions (1024)
+    
+    The Selection-Broadcast cycle:
+    1. SELECTION: Specialists compete, activity builds over rounds
+    2. IGNITION: When activity exceeds threshold, global ignition occurs
+    3. BROADCAST: Winning content is sent to all specialists
+    4. FEEDBACK: Specialists respond, refining the broadcast
+    """
+    
+    def __init__(
+        self,
+        config: Optional[SelectionBroadcastConfig] = None,
+        modality_dims: Optional[Dict[str, int]] = None,
+        **kwargs,
+    ):
+        super().__init__()
+        
+        self.config = config or SelectionBroadcastConfig(**kwargs)
+        
+        # Default modality dimensions (larger for better representation)
+        self.modality_dims = modality_dims or {
+            'vision': 1024,
+            'text': 1024,
+            'audio': 512,
+            'sensors': 512,
+        }
+        
+        # Modality projections
+        self.projections = nn.ModuleDict()
+        for name, dim in self.modality_dims.items():
+            self.projections[name] = ModalityProjection(
+                input_dim=dim,
+                workspace_dim=self.config.workspace_dim,
+                dropout=self.config.dropout,
+            )
+        
+        # Iterative competition
+        self.competition = IterativeCompetition(
+            workspace_dim=self.config.workspace_dim,
+            num_heads=self.config.num_heads,
+            selection_rounds=self.config.selection_rounds,
+            ignition_threshold=self.config.ignition_threshold,
+            temperature=self.config.competition_temperature,
+            dropout=self.config.dropout,
+        )
+        
+        # Working memory
+        self.working_memory = create_working_memory(
+            input_dim=self.config.workspace_dim,
+            hidden_dim=self.config.memory_hidden_dim,
+            output_dim=self.config.workspace_dim,
+            mode=self.config.memory_mode,
+        )
+        
+        # Refined broadcast
+        self.broadcast = RefinedBroadcast(
+            workspace_dim=self.config.workspace_dim,
+            modality_dims=self.modality_dims,
+            broadcast_iterations=self.config.broadcast_iterations,
+            broadcast_decay=self.config.broadcast_decay,
+            dropout=self.config.dropout,
+        )
+        
+        # Context integration
+        self.integration = nn.Sequential(
+            nn.Linear(self.config.workspace_dim * 2, self.config.workspace_dim),
+            nn.LayerNorm(self.config.workspace_dim),
+            nn.GELU(),  # GELU often better than ReLU for transformers
+            nn.Linear(self.config.workspace_dim, self.config.workspace_dim),
+        )
+        
+        # Confidence estimation
+        if self.config.use_confidence_gating:
+            self.confidence_estimator = nn.Sequential(
+                nn.Linear(self.config.workspace_dim, self.config.workspace_dim // 4),
+                nn.ReLU(),
+                nn.Linear(self.config.workspace_dim // 4, 1),
+                nn.Sigmoid(),
+            )
+        
+        # Previous context
+        self.register_buffer('prev_context', None)
+    
+    def reset_state(self):
+        """Reset workspace state."""
+        self.working_memory.reset_state()
+        self.prev_context = None
+    
+    def forward(
+        self,
+        modality_inputs: Dict[str, torch.Tensor],
+        modality_states: Optional[Dict[str, torch.Tensor]] = None,
+        return_details: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Process through Selection-Broadcast cycle.
+        
+        Args:
+            modality_inputs: Dict of modality features
+            modality_states: Optional specialist states for feedback
+            return_details: Return detailed competition info
+            
+        Returns:
+            Dict with workspace, broadcasts, and optional details
+        """
+        batch_size = next(iter(modality_inputs.values())).shape[0]
+        device = next(iter(modality_inputs.values())).device
+        
+        # 1. Project modalities to workspace dimension
+        projected = []
+        saliences = []
+        modality_names = []
+        
+        for name, features in modality_inputs.items():
+            if name in self.projections:
+                proj, sal = self.projections[name](features)
+                projected.append(proj)
+                saliences.append(sal)
+                modality_names.append(name)
+        
+        if len(projected) == 0:
+            raise ValueError("No valid modality inputs")
+        
+        projected = torch.stack(projected, dim=1)
+        saliences = torch.stack(saliences, dim=1)
+        
+        # 2. SELECTION: Iterative competition
+        winners, attention, competition_info = self.competition(projected, saliences)
+        
+        # 3. Aggregate to workspace content
+        workspace_content = winners.sum(dim=1)
+        
+        # 4. Integrate with previous context
+        if self.prev_context is not None:
+            if self.prev_context.shape[0] != workspace_content.shape[0]:
+                self.prev_context = None
+        
+        if self.prev_context is not None:
+            combined = torch.cat([workspace_content, self.prev_context], dim=-1)
+            integrated = self.integration(combined)
+        else:
+            integrated = workspace_content
+        
+        # 5. Working memory update
+        memory_result = self.working_memory(integrated)
+        memory_output = memory_result['output']
+        
+        # 6. BROADCAST: Send to specialists with feedback
+        broadcasts, refined_content = self.broadcast(
+            memory_output,
+            modality_states=modality_states,
+        )
+        
+        # 7. Confidence gating
+        if self.config.use_confidence_gating:
+            confidence = self.confidence_estimator(refined_content)
+            output_workspace = refined_content * confidence
+        else:
+            confidence = None
+            output_workspace = refined_content
+        
+        # 8. Update context
+        self.prev_context = memory_output.detach()
+        
+        # Build output
+        output = {
+            'workspace': output_workspace,
+            'broadcasts': broadcasts,
+            'memory_output': memory_result,
+            'modality_names': modality_names,
+            'attention': {name: attention[:, i] for i, name in enumerate(modality_names)},
+            'ignition': competition_info['ignition'],
+            'global_ignition': competition_info['global_ignition'],
+        }
+        
+        if confidence is not None:
+            output['confidence'] = confidence
+        
+        if return_details:
+            output['competition_details'] = competition_info
+        
+        return output
+    
+    def get_workspace_state(self) -> Dict[str, torch.Tensor]:
+        """Get current workspace state."""
+        return {
+            'prev_context': self.prev_context,
+            'memory_buffer': self.working_memory.memory_buffer,
+        }
+
+
+def create_selection_broadcast_workspace(
+    workspace_dim: int = 1024,
+    modality_dims: Optional[Dict[str, int]] = None,
+    num_heads: int = 16,
+    selection_rounds: int = 3,
+    ignition_threshold: float = 0.3,
+    memory_mode: str = "cfc",
+    **kwargs,
+) -> SelectionBroadcastWorkspace:
+    """
+    Create improved Selection-Broadcast workspace.
+    
+    This is the recommended workspace for new projects.
+    """
+    config = SelectionBroadcastConfig(
+        workspace_dim=workspace_dim,
+        num_heads=num_heads,
+        selection_rounds=selection_rounds,
+        ignition_threshold=ignition_threshold,
+        memory_mode=memory_mode,
+        **kwargs,
+    )
+    
+    return SelectionBroadcastWorkspace(
+        config=config,
+        modality_dims=modality_dims,
+    )

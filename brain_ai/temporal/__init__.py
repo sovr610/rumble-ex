@@ -12,6 +12,10 @@ from .htm import (
     SparseTensor,
     create_htm_layer,
     HTM_CORE_AVAILABLE,
+    # Accelerated HTM (2025)
+    ReflexMemory,
+    AcceleratedHTM,
+    create_accelerated_htm,
 )
 
 from .sequence import (
@@ -32,6 +36,10 @@ __all__ = [
     "SparseTensor",
     "create_htm_layer",
     "HTM_CORE_AVAILABLE",
+    # Accelerated HTM (2025)
+    "ReflexMemory",
+    "AcceleratedHTM",
+    "create_accelerated_htm",
     # Sequence predictors
     "TemporalLayer",
     "LSTMSequencePredictor",

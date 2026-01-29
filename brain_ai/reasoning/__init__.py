@@ -13,6 +13,16 @@ from .symbolic import (
     RuleNetwork,
     KnowledgeBase,
     create_symbolic_reasoner,
+    # Logic Tensor Networks (2025)
+    RealLogic,
+    LTNPredicate,
+    LTNFunction,
+    LTNConstant,
+    LTNVariable,
+    LogicTensorNetwork,
+    LTNSatisfactionAggregator,
+    ltn_loss,
+    create_ltn,
 )
 from .system2 import (
     DualProcessReasoner,
@@ -34,6 +44,16 @@ __all__ = [
     'RuleNetwork',
     'KnowledgeBase',
     'create_symbolic_reasoner',
+    # Logic Tensor Networks (2025)
+    'RealLogic',
+    'LTNPredicate',
+    'LTNFunction',
+    'LTNConstant',
+    'LTNVariable',
+    'LogicTensorNetwork',
+    'LTNSatisfactionAggregator',
+    'ltn_loss',
+    'create_ltn',
     # Dual-Process Reasoning
     'DualProcessReasoner',
     'System2Config',

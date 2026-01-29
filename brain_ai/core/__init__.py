@@ -8,6 +8,7 @@ from .neurons import (
     LIFNeuron,
     AdaptiveLIFNeuron,
     RecurrentLIFNeuron,
+    AdvancedLIFNeuron,  # New: with learnable delays and heterogeneous tau
     get_surrogate,
     ATanSurrogate,
     FastSigmoidSurrogate,
@@ -32,11 +33,24 @@ from .snn import (
     create_snn,
 )
 
+from .losses import (
+    prob_spikes_loss,
+    spike_rate_regularization,
+    spike_rate_range_regularization,
+    temporal_consistency_loss,
+    temporal_sparsity_loss,
+    inter_spike_interval_loss,
+    membrane_potential_regularization,
+    SNNLoss,
+    compute_snn_metrics,
+)
+
 __all__ = [
     # Neurons
     "LIFNeuron",
     "AdaptiveLIFNeuron",
     "RecurrentLIFNeuron",
+    "AdvancedLIFNeuron",
     "get_surrogate",
     "ATanSurrogate",
     "FastSigmoidSurrogate",
@@ -55,4 +69,14 @@ __all__ = [
     "SNNConv2d",
     "ResidualSNNBlock",
     "create_snn",
+    # Losses (new)
+    "prob_spikes_loss",
+    "spike_rate_regularization",
+    "spike_rate_range_regularization",
+    "temporal_consistency_loss",
+    "temporal_sparsity_loss",
+    "inter_spike_interval_loss",
+    "membrane_potential_regularization",
+    "SNNLoss",
+    "compute_snn_metrics",
 ]

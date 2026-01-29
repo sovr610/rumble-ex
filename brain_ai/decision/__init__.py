@@ -12,6 +12,10 @@ from .active_inference import (
     GenerativeModel,
     Preferences,
     create_active_inference_agent,
+    # Improved EFE (2025)
+    EmpowermentEstimator,
+    ImprovedEFEComputation,
+    ImprovedActiveInferenceAgent,
 )
 from .output_heads import (
     DecisionHeads,
@@ -31,6 +35,10 @@ __all__ = [
     'GenerativeModel',
     'Preferences',
     'create_active_inference_agent',
+    # Improved EFE (2025)
+    'EmpowermentEstimator',
+    'ImprovedEFEComputation',
+    'ImprovedActiveInferenceAgent',
     # Output Heads
     'DecisionHeads',
     'OutputHeadsConfig',

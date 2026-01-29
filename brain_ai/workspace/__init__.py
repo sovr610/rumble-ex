@@ -17,6 +17,12 @@ from .global_workspace import (
     AttentionCompetition,
     InformationBroadcast,
     create_global_workspace,
+    # Improved Selection-Broadcast (2025)
+    SelectionBroadcastConfig,
+    IterativeCompetition,
+    RefinedBroadcast,
+    SelectionBroadcastWorkspace,
+    create_selection_broadcast_workspace,
 )
 
 __all__ = [
@@ -32,4 +38,10 @@ __all__ = [
     'AttentionCompetition',
     'InformationBroadcast',
     'create_global_workspace',
+    # Improved Selection-Broadcast (2025)
+    'SelectionBroadcastConfig',
+    'IterativeCompetition',
+    'RefinedBroadcast',
+    'SelectionBroadcastWorkspace',
+    'create_selection_broadcast_workspace',
 ]

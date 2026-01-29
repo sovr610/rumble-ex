@@ -509,3 +509,475 @@ def create_symbolic_reasoner(
         **kwargs,
     )
     return SymbolicReasoner(config)
+
+
+# =============================================================================
+# LOGIC TENSOR NETWORKS (LTN) - Improved Neuro-Symbolic Reasoning (2025)
+# =============================================================================
+
+class RealLogic:
+    """
+    Real Logic operations for LTN.
+    
+    Extends fuzzy logic with:
+    - Graded similarity
+    - Smooth quantifiers
+    - Stable semantics for training
+    
+    Based on the Real Logic formalization from LTN research.
+    """
+    
+    def __init__(
+        self,
+        p_forall: float = 2.0,  # p-norm for universal quantifier
+        p_exists: float = 0.5,  # p-norm for existential quantifier
+    ):
+        self.p_forall = p_forall
+        self.p_exists = p_exists
+    
+    @staticmethod
+    def AND(a: torch.Tensor, b: torch.Tensor, stable: bool = True) -> torch.Tensor:
+        """Product t-norm with optional stability."""
+        result = a * b
+        if stable:
+            # Add small epsilon to prevent zero gradients
+            result = result + 1e-8 * (a + b)
+        return result.clamp(0, 1)
+    
+    @staticmethod
+    def OR(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Probabilistic sum t-conorm."""
+        return (a + b - a * b).clamp(0, 1)
+    
+    @staticmethod
+    def NOT(a: torch.Tensor) -> torch.Tensor:
+        """Standard negation."""
+        return 1 - a
+    
+    @staticmethod
+    def IMPLIES(a: torch.Tensor, b: torch.Tensor, method: str = "kleene_dienes") -> torch.Tensor:
+        """
+        Fuzzy implication with multiple methods.
+        
+        Methods:
+        - kleene_dienes: max(1-a, b)
+        - reichenbach: 1 - a + a*b
+        - lukasiewicz: min(1, 1-a+b)
+        - goguen: a == 0 ? 1 : min(1, b/a)
+        """
+        if method == "kleene_dienes":
+            return torch.max(1 - a, b)
+        elif method == "reichenbach":
+            return 1 - a + a * b
+        elif method == "lukasiewicz":
+            return (1 - a + b).clamp(max=1)
+        elif method == "goguen":
+            return torch.where(a < 1e-6, torch.ones_like(a), (b / a.clamp(min=1e-6)).clamp(max=1))
+        else:
+            return torch.max(1 - a, b)
+    
+    def FORALL(self, x: torch.Tensor, dim: int = -1, stable: bool = True) -> torch.Tensor:
+        """
+        Generalized mean approximation of universal quantifier.
+        
+        Uses p-mean with p→∞ approximating min.
+        """
+        if stable:
+            x = x.clamp(min=1e-8)
+        
+        # p-mean: (mean(x^p))^(1/p)
+        # For p > 1, this is closer to min as p increases
+        result = (x.pow(self.p_forall).mean(dim=dim)).pow(1 / self.p_forall)
+        return result.clamp(0, 1)
+    
+    def EXISTS(self, x: torch.Tensor, dim: int = -1, stable: bool = True) -> torch.Tensor:
+        """
+        Generalized mean approximation of existential quantifier.
+        
+        Uses p-mean with p→0 approximating max.
+        """
+        if stable:
+            x = x.clamp(min=1e-8, max=1-1e-8)
+        
+        # For p < 1, this is closer to max as p decreases
+        result = (x.pow(self.p_exists).mean(dim=dim)).pow(1 / self.p_exists)
+        return result.clamp(0, 1)
+    
+    @staticmethod
+    def EQUIV(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Fuzzy equivalence (symmetric)."""
+        return 1 - torch.abs(a - b)
+
+
+class LTNPredicate(nn.Module):
+    """
+    Logic Tensor Network predicate.
+    
+    A predicate is a function that takes grounded terms (entities)
+    and returns a truth value in [0, 1].
+    
+    This is more powerful than simple embedding lookup because
+    it learns a relation function over the grounding space.
+    """
+    
+    def __init__(
+        self,
+        arity: int,  # Number of arguments (1=unary, 2=binary, etc.)
+        embedding_dim: int,
+        hidden_dim: int = 128,
+        layers: int = 3,
+    ):
+        super().__init__()
+        
+        self.arity = arity
+        self.embedding_dim = embedding_dim
+        
+        # MLP for predicate evaluation
+        input_dim = embedding_dim * arity
+        
+        layers_list = []
+        current_dim = input_dim
+        for i in range(layers - 1):
+            layers_list.extend([
+                nn.Linear(current_dim, hidden_dim),
+                nn.ELU(),  # ELU often better than ReLU for LTN
+                nn.Dropout(0.1),
+            ])
+            current_dim = hidden_dim
+        
+        layers_list.append(nn.Linear(current_dim, 1))
+        layers_list.append(nn.Sigmoid())
+        
+        self.mlp = nn.Sequential(*layers_list)
+    
+    def forward(self, *args: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluate predicate on grounded terms.
+        
+        Args:
+            *args: Entity embeddings, one per arity position
+            
+        Returns:
+            Truth value in [0, 1]
+        """
+        assert len(args) == self.arity
+        
+        # Handle different input shapes
+        # For diagonal semantics (paired evaluation)
+        batch_sizes = [a.shape[0] for a in args]
+        
+        if len(set(batch_sizes)) == 1:
+            # Same batch size - diagonal evaluation
+            combined = torch.cat(args, dim=-1)
+            return self.mlp(combined).squeeze(-1)
+        else:
+            # Different sizes - need to broadcast
+            raise NotImplementedError("Cross-product semantics not yet implemented")
+
+
+class LTNFunction(nn.Module):
+    """
+    Logic Tensor Network function.
+    
+    A function maps grounded terms to new terms in the embedding space.
+    For example: Father(x) returns the embedding of x's father.
+    """
+    
+    def __init__(
+        self,
+        arity: int,
+        embedding_dim: int,
+        hidden_dim: int = 128,
+    ):
+        super().__init__()
+        
+        self.arity = arity
+        self.embedding_dim = embedding_dim
+        
+        input_dim = embedding_dim * arity
+        
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ELU(),
+            nn.Linear(hidden_dim, embedding_dim),
+        )
+    
+    def forward(self, *args: torch.Tensor) -> torch.Tensor:
+        """Apply function to get new term."""
+        assert len(args) == self.arity
+        combined = torch.cat(args, dim=-1)
+        return self.mlp(combined)
+
+
+class LTNConstant(nn.Module):
+    """
+    LTN Constant - a learnable entity embedding.
+    
+    Constants are fixed points in the grounding space
+    that the model learns to position appropriately.
+    """
+    
+    def __init__(self, embedding_dim: int, init_value: Optional[torch.Tensor] = None):
+        super().__init__()
+        
+        if init_value is not None:
+            self.value = nn.Parameter(init_value)
+        else:
+            self.value = nn.Parameter(torch.randn(embedding_dim) * 0.1)
+    
+    def forward(self) -> torch.Tensor:
+        return self.value
+
+
+class LTNVariable:
+    """
+    LTN Variable - represents a set of groundings.
+    
+    Variables range over a set of entities and are used
+    in quantified formulas.
+    """
+    
+    def __init__(self, embeddings: torch.Tensor, name: str = "x"):
+        self.embeddings = embeddings  # (num_entities, embedding_dim)
+        self.name = name
+    
+    def __len__(self):
+        return self.embeddings.shape[0]
+    
+    def __getitem__(self, idx):
+        return self.embeddings[idx]
+
+
+class LogicTensorNetwork(nn.Module):
+    """
+    Complete Logic Tensor Network for neuro-symbolic reasoning.
+    
+    LTN combines:
+    - Grounding: Neural embeddings for entities/concepts
+    - Predicates: Learned relation classifiers
+    - Functions: Learned term constructors
+    - Logic: Real Logic operations over truth values
+    
+    Based on 2025 research on scalable LTN implementations.
+    
+    Example usage:
+        ltn = LogicTensorNetwork(embedding_dim=64)
+        
+        # Define predicates
+        is_animal = ltn.add_predicate("IsAnimal", arity=1)
+        eats = ltn.add_predicate("Eats", arity=2)
+        
+        # Define constants
+        cat = ltn.add_constant("cat")
+        mouse = ltn.add_constant("mouse")
+        
+        # Ground entities
+        x_cat = ltn.ground(cat)
+        x_mouse = ltn.ground(mouse)
+        
+        # Evaluate formulas
+        truth = is_animal(x_cat)  # Should be high
+        truth = eats(x_cat, x_mouse)  # Cat eats mouse
+    """
+    
+    def __init__(
+        self,
+        embedding_dim: int = 64,
+        hidden_dim: int = 128,
+        num_layers: int = 3,
+        p_forall: float = 2.0,
+        p_exists: float = 0.5,
+    ):
+        super().__init__()
+        
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Real logic operations
+        self.logic = RealLogic(p_forall=p_forall, p_exists=p_exists)
+        
+        # Named predicates
+        self.predicates = nn.ModuleDict()
+        
+        # Named functions
+        self.functions = nn.ModuleDict()
+        
+        # Named constants
+        self.constants = nn.ModuleDict()
+        
+        # Feature-to-embedding encoder (for grounding from features)
+        self.feature_encoder = None
+    
+    def add_predicate(
+        self,
+        name: str,
+        arity: int = 1,
+        hidden_dim: Optional[int] = None,
+    ) -> LTNPredicate:
+        """Add a named predicate to the network."""
+        pred = LTNPredicate(
+            arity=arity,
+            embedding_dim=self.embedding_dim,
+            hidden_dim=hidden_dim or self.hidden_dim,
+            layers=self.num_layers,
+        )
+        self.predicates[name] = pred
+        return pred
+    
+    def add_function(
+        self,
+        name: str,
+        arity: int = 1,
+        hidden_dim: Optional[int] = None,
+    ) -> LTNFunction:
+        """Add a named function to the network."""
+        func = LTNFunction(
+            arity=arity,
+            embedding_dim=self.embedding_dim,
+            hidden_dim=hidden_dim or self.hidden_dim,
+        )
+        self.functions[name] = func
+        return func
+    
+    def add_constant(
+        self,
+        name: str,
+        init_value: Optional[torch.Tensor] = None,
+    ) -> LTNConstant:
+        """Add a named constant to the network."""
+        const = LTNConstant(
+            embedding_dim=self.embedding_dim,
+            init_value=init_value,
+        )
+        self.constants[name] = const
+        return const
+    
+    def set_feature_encoder(self, input_dim: int):
+        """Set up encoder for grounding from input features."""
+        self.feature_encoder = nn.Sequential(
+            nn.Linear(input_dim, self.hidden_dim),
+            nn.ELU(),
+            nn.Linear(self.hidden_dim, self.embedding_dim),
+        )
+    
+    def ground_features(self, features: torch.Tensor) -> torch.Tensor:
+        """Ground input features to embedding space."""
+        if self.feature_encoder is None:
+            raise ValueError("Feature encoder not set. Call set_feature_encoder first.")
+        return self.feature_encoder(features)
+    
+    def ground(self, constant: LTNConstant) -> torch.Tensor:
+        """Get grounding of a constant."""
+        return constant()
+    
+    def variable(self, embeddings: torch.Tensor, name: str = "x") -> LTNVariable:
+        """Create a variable from embeddings."""
+        return LTNVariable(embeddings, name)
+    
+    # Convenience wrappers for logic operations
+    def And(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.logic.AND(a, b)
+    
+    def Or(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.logic.OR(a, b)
+    
+    def Not(self, a: torch.Tensor) -> torch.Tensor:
+        return self.logic.NOT(a)
+    
+    def Implies(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.logic.IMPLIES(a, b)
+    
+    def Equiv(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return self.logic.EQUIV(a, b)
+    
+    def Forall(self, x: torch.Tensor, formula_fn: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+        """Universal quantifier over a variable."""
+        # Evaluate formula for all groundings
+        truths = formula_fn(x)
+        return self.logic.FORALL(truths, dim=0)
+    
+    def Exists(self, x: torch.Tensor, formula_fn: Callable[[torch.Tensor], torch.Tensor]) -> torch.Tensor:
+        """Existential quantifier over a variable."""
+        truths = formula_fn(x)
+        return self.logic.EXISTS(truths, dim=0)
+
+
+class LTNSatisfactionAggregator(nn.Module):
+    """
+    Aggregates satisfiability of multiple formulas.
+    
+    Used for computing overall knowledge base satisfaction
+    and for defining loss functions based on logical constraints.
+    """
+    
+    def __init__(self, p: float = 2.0):
+        super().__init__()
+        self.p = p
+    
+    def forward(self, *formula_truths: torch.Tensor) -> torch.Tensor:
+        """
+        Aggregate satisfaction of formulas.
+        
+        Uses p-mean for soft AND over all formulas.
+        """
+        if len(formula_truths) == 0:
+            return torch.tensor(1.0)
+        
+        stacked = torch.stack([f.mean() for f in formula_truths])
+        
+        # p-mean aggregation
+        return (stacked.pow(self.p).mean()).pow(1 / self.p)
+
+
+def ltn_loss(sat: torch.Tensor) -> torch.Tensor:
+    """
+    Convert satisfiability to loss.
+    
+    We want to maximize satisfiability, so loss = 1 - sat
+    """
+    return 1 - sat
+
+
+def create_ltn(
+    embedding_dim: int = 64,
+    hidden_dim: int = 128,
+    predicate_names: Optional[List[Tuple[str, int]]] = None,
+    function_names: Optional[List[Tuple[str, int]]] = None,
+    constant_names: Optional[List[str]] = None,
+    **kwargs,
+) -> LogicTensorNetwork:
+    """
+    Create a Logic Tensor Network with predefined symbols.
+    
+    Args:
+        embedding_dim: Dimension of grounding space
+        hidden_dim: Hidden layer dimension
+        predicate_names: List of (name, arity) for predicates
+        function_names: List of (name, arity) for functions
+        constant_names: List of constant names
+        
+    Returns:
+        Configured LogicTensorNetwork
+    """
+    ltn = LogicTensorNetwork(
+        embedding_dim=embedding_dim,
+        hidden_dim=hidden_dim,
+        **kwargs,
+    )
+    
+    if predicate_names:
+        for name, arity in predicate_names:
+            ltn.add_predicate(name, arity)
+    
+    if function_names:
+        for name, arity in function_names:
+            ltn.add_function(name, arity)
+    
+    if constant_names:
+        for name in constant_names:
+            ltn.add_constant(name)
+    
+    return ltn
