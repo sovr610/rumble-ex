@@ -209,6 +209,7 @@ class DecisionConfig:
     planning_horizon: int = 8  # Longer planning
     epistemic_weight: float = 1.0
     num_policies: int = 128  # More action options
+    state_dim: int = 64  # Active inference latent state dimension
 
     # Output heads
     num_classes: int = 10000  # Large-scale classification
@@ -274,6 +275,7 @@ class MetaConfig:
     - Task2Vec for task embeddings and clustering
     """
     num_modulators: int = 8  # More neuromodulatory signals
+    neuromod_hidden_dim: int = 128  # Neuromodulatory gate hidden dimension
 
     # MAML (production scale)
     inner_lr: float = 0.001  # Smaller for large models
@@ -363,11 +365,16 @@ class TrainingConfig:
     # Distributed
     use_ddp: bool = True
     use_fsdp: bool = True  # For 7B scale
-    
+
+    # Performance
+    use_torch_compile: bool = False  # torch.compile() wrapping
+    torch_compile_backend: str = "inductor"  # inductor | cudagraphs
+    use_gradient_checkpointing: bool = False  # Memory-compute tradeoff for large models
+
     # Checkpointing
     checkpoint_interval: int = 1000
     eval_interval: int = 500
-    
+
     # Data
     num_workers: int = 8
     prefetch_factor: int = 4
@@ -457,6 +464,67 @@ class DatasetConfig:
 
 
 @dataclass
+class VJEPA2EncoderConfig:
+    """V-JEPA 2 vision encoder configuration."""
+    enabled: bool = False
+    model_name: str = "vjepa2_vitg"
+    pretrained: bool = True
+    freeze_encoder: bool = True
+    num_query_tokens: int = 16
+    probe_layers: int = 4
+    probe_heads: int = 16
+    output_dim: int = 4096
+    spike_output: bool = False
+    video_frames: int = 16
+    tubelet_size: int = 2
+    encoder_dim: int = 1408
+
+
+@dataclass
+class VJEPA2WorldModelConfig:
+    """V-JEPA 2-AC world model for Active Inference."""
+    enabled: bool = False
+    predictor_dim: int = 384
+    predictor_depth: int = 12
+    action_dim: int = 7
+    action_embed_dim: int = 384
+    planning_horizon: int = 8
+    cem_population: int = 128
+    cem_elite_ratio: float = 0.1
+    cem_iterations: int = 5
+    efe_pragmatic_weight: float = 1.0
+    efe_epistemic_weight: float = 1.0
+    efe_empowerment_weight: float = 0.1
+
+
+@dataclass
+class ImaginationConfig:
+    """Imagination engine for System 2 reasoning."""
+    enabled: bool = False
+    max_rollout_steps: int = 16
+    num_parallel_scenarios: int = 8
+    quality_metric: str = "coherence"
+
+
+@dataclass
+class NeuromodulatedMaskingConfig:
+    """Dynamic masking controlled by neuromodulatory signals."""
+    enabled: bool = False
+    base_mask_ratio: float = 0.75
+    ach_sensitivity: float = 0.3
+    ne_sensitivity: float = 0.3
+    salience_guided: bool = True
+
+
+@dataclass
+class TemporalBridgeConfig:
+    """Temporal bridge from V-JEPA 2 to HTM."""
+    enabled: bool = False
+    pooling_mode: str = "mean"
+    output_dim: int = 4096
+
+
+@dataclass
 class BrainAIConfig:
     """Complete system configuration for 7B-equivalent production model."""
 
@@ -479,6 +547,14 @@ class BrainAIConfig:
     use_symbolic: bool = True
     use_meta: bool = True
     use_engram: bool = True  # Enable engram for production
+
+    # V-JEPA 2 integration
+    vjepa2_encoder: VJEPA2EncoderConfig = field(default_factory=VJEPA2EncoderConfig)
+    vjepa2_world_model: VJEPA2WorldModelConfig = field(default_factory=VJEPA2WorldModelConfig)
+    imagination: ImaginationConfig = field(default_factory=ImaginationConfig)
+    neuromodulated_masking: NeuromodulatedMaskingConfig = field(default_factory=NeuromodulatedMaskingConfig)
+    temporal_bridge: TemporalBridgeConfig = field(default_factory=TemporalBridgeConfig)
+
     engram_layer_idx: int = 2  # Deeper integration
 
     # Training
