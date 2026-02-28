@@ -469,25 +469,41 @@ class BrainInference:
             attention = None
             reasoning_used = False
         
+        # Determine effective task type
+        effective_task = task or self.config.get('output_type', 'classify')
+        is_continuous = effective_task in ('control', 'active_inference')
+
         # Get predictions
-        probabilities = F.softmax(logits, dim=-1)
-        confidence = probabilities.max(dim=-1)[0].item()
-        prediction = probabilities.argmax(dim=-1).item()
-        
-        # Top-k
-        top_k_probs, top_k_indices = probabilities.topk(min(top_k, probabilities.shape[-1]))
-        top_k_classes = [
-            (idx.item(), prob.item())
-            for idx, prob in zip(top_k_indices[0], top_k_probs[0])
-        ]
-        
-        # Map to class names if available
-        if self.class_names:
-            prediction = self.class_names[prediction]
+        if is_continuous:
+            # Continuous output: no softmax/argmax
+            probabilities = None
+            prediction = logits.detach()
+            if confidence_tensor is not None:
+                confidence = confidence_tensor.mean().item()
+            else:
+                confidence = 1.0
+            top_k_classes = []
+        else:
+            probabilities = F.softmax(logits, dim=-1)
+            confidence = probabilities.max(dim=-1)[0].item()
+            prediction = probabilities.argmax(dim=-1).item()
+
+            # Top-k
+            top_k_probs, top_k_indices = probabilities.topk(
+                min(top_k, probabilities.shape[-1])
+            )
             top_k_classes = [
-                (self.class_names[idx], prob)
-                for idx, prob in top_k_classes
+                (idx.item(), prob.item())
+                for idx, prob in zip(top_k_indices[0], top_k_probs[0])
             ]
+
+            # Map to class names if available
+            if self.class_names:
+                prediction = self.class_names[prediction]
+                top_k_classes = [
+                    (self.class_names[idx], prob)
+                    for idx, prob in top_k_classes
+                ]
         
         return InferenceResult(
             output=logits,

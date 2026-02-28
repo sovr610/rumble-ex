@@ -485,8 +485,7 @@ def main():
     # AMP setup
     scaler = None
     if args.use_amp:
-        from torch.cuda.amp import GradScaler
-        scaler = GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
         print("Using automatic mixed precision (AMP)")
     
     best_acc = 0.0

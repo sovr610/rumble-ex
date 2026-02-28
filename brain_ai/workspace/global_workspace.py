@@ -308,8 +308,8 @@ class GlobalWorkspace(nn.Module):
             nn.Linear(self.config.workspace_dim, self.config.workspace_dim),
         )
 
-        # Context from previous timestep
-        self.register_buffer('prev_context', None)
+        # Context from previous timestep (transient, not checkpointed)
+        self.prev_context: Optional[torch.Tensor] = None
 
     def reset_state(self):
         """Reset workspace state."""
@@ -902,14 +902,14 @@ class SelectionBroadcastWorkspace(nn.Module):
                 nn.Sigmoid(),
             )
         
-        # Previous context
-        self.register_buffer('prev_context', None)
-    
+        # Previous context (transient, not checkpointed)
+        self.prev_context: Optional[torch.Tensor] = None
+
     def reset_state(self):
         """Reset workspace state."""
         self.working_memory.reset_state()
         self.prev_context = None
-    
+
     def forward(
         self,
         modality_inputs: Dict[str, torch.Tensor],

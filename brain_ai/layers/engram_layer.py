@@ -64,7 +64,8 @@ class EngramAugmentedLayer(nn.Module):
             self.snn = SNNLinear(
                 hidden_dim, hidden_dim,
                 beta=snn_config.beta,
-                num_steps=snn_config.num_timesteps,
+                surrogate=snn_config.surrogate,
+                dropout=snn_config.dropout,
             )
             self.snn_norm = RMSNorm(hidden_dim)
 

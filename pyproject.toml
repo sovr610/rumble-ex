@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brain-ai"
+version = "0.1.0"
+description = "Brain-inspired cognitive architecture combining SNN, HTM, Global Workspace Theory, Active Inference, and Neuro-Symbolic Reasoning"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "sovr610"},
+]
+keywords = ["brain-inspired", "cognitive-architecture", "spiking-neural-networks", "active-inference", "htm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "torchaudio>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "einops>=0.6.0",
+    "tqdm>=4.65.0",
+    "requests>=2.31.0",
+    "psutil>=5.9.0",
+    "snntorch>=0.7.0",
+    "spikingjelly>=0.0.0.0.14",
+    "tonic>=1.0.0",
+    "ncps>=0.0.7",
+    "pyod>=1.0.0",
+    "scikit-learn>=1.3.0",
+    "h5py>=3.8.0",
+    "pandas>=2.0.0",
+    "inferactively-pymdp>=0.0.7.1",
+    "minari>=0.4.0",
+    "gymnasium>=0.29.0",
+    "minigrid>=2.3.0",
+    "datasets>=2.14.0",
+    "Pillow>=10.0.0",
+    "higher>=0.2.1",
+    "transformers>=4.30.0",
+    "tokenizers>=0.13.0",
+    "matplotlib>=3.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.3.0",
+    "pytest-cov>=4.1.0",
+]
+tracking = [
+    "tensorboard>=2.12.0",
+    "wandb>=0.15.0",
+]
+all = ["brain-ai[dev,tracking]"]
+
+[project.scripts]
+brain-ai = "brain_ai.cli:main"
+
+[project.urls]
+Repository = "https://github.com/sovr610/human-brain"
+
+[tool.setuptools.packages.find]
+include = ["brain_ai*"]
+exclude = ["tests*", "scripts*", "brain-ai-dev*", "paper-spec-compiler*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

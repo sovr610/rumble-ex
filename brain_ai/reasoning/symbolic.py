@@ -455,7 +455,7 @@ class KnowledgeBase(nn.Module):
         self.fact_keys[idx] = key.detach()
         self.fact_values[idx] = value.detach()
         self.fact_truths[idx] = truth
-        self.num_facts = torch.tensor(min(self.num_facts.item() + 1, self.max_facts))
+        self.num_facts.fill_(min(self.num_facts.item() + 1, self.max_facts))
 
     def query(
         self,

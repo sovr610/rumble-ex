@@ -149,19 +149,22 @@ class OffloadableEmbedding(nn.Module):
         cached_indices: torch.Tensor,
         cached_embeddings: torch.Tensor,
     ) -> torch.Tensor:
-        """Gather embeddings from prefetch cache."""
+        """Gather embeddings from prefetch cache.
+
+        Uses searchsorted for O(cache_size) memory instead of O(num_embeddings).
+        """
         device = indices.device
         original_shape = indices.shape
         flat_indices = indices.flatten()
 
-        index_to_pos = torch.zeros(
-            self.num_embeddings, dtype=torch.long, device=device
-        )
-        index_to_pos[cached_indices] = torch.arange(
-            len(cached_indices), device=device
-        )
-
-        cache_positions = index_to_pos[flat_indices]
+        # Sort cache indices for binary search
+        sorted_cache, sort_order = cached_indices.sort()
+        # Find positions of flat_indices within sorted cache
+        positions_in_sorted = torch.searchsorted(sorted_cache, flat_indices)
+        # Clamp to valid range for the gather
+        positions_in_sorted = positions_in_sorted.clamp(max=len(sorted_cache) - 1)
+        # Map back to original cache positions
+        cache_positions = sort_order[positions_in_sorted]
         gathered = cached_embeddings[cache_positions]
 
         return gathered.view(*original_shape, self.embedding_dim)

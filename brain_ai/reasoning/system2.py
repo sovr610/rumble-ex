@@ -207,10 +207,12 @@ class System2Module(nn.Module):
         confidences = []
 
         # Iterative reasoning
+        num_iters = 0
         for i in range(max_iter):
             prev_state = state
             state, confidence = self.reason_step(state, context)
             confidences.append(confidence)
+            num_iters = i + 1
 
             if return_trace:
                 trace.append(state)
@@ -225,12 +227,12 @@ class System2Module(nn.Module):
 
         # Project to output
         output = self.output_proj(state)
-        final_confidence = confidences[-1]
+        final_confidence = confidences[-1] if confidences else torch.zeros(batch_size, 1, device=x.device)
 
         result = {
             'output': output,
             'confidence': final_confidence,
-            'num_iterations': torch.tensor(i + 1),
+            'num_iterations': torch.tensor(num_iters),
             'state': state,
         }
 

@@ -1,0 +1,6 @@
+{
+  "name": "paper-spec-compiler",
+  "version": "0.1.0",
+  "description": "Compiles academic ML/RL papers into machine-readable executable specifications (spec.yaml, spec.md) with compliance tests and drift detection.",
+  "skills": ["skills/spec-compiler"]
+}

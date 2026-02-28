@@ -1,0 +1,17 @@
+{
+  "paper_arxiv_id": null,
+  "paper_version": null,
+  "paper_title": null,
+  "extraction_timestamp": null,
+  "tool_version": "0.1.0",
+  "spec_yaml_sha256": null,
+  "unresolved_count": 0,
+  "sources_used": {
+    "arxiv_tex": false,
+    "pdf": false,
+    "html": false
+  },
+  "baseline_imports": [],
+  "finalized": false,
+  "finalization_blocked_by": "UNRESOLVED fields must be resolved before finalization"
+}

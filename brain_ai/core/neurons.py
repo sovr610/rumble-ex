@@ -92,6 +92,38 @@ class StraightThroughSurrogate(torch.autograd.Function):
         return grad_output
 
 
+def _make_atan_surrogate(alpha: float):
+    """Create an ATan surrogate Function class with the given alpha (thread-safe)."""
+    class _ATan(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x: torch.Tensor) -> torch.Tensor:
+            ctx.save_for_backward(x)
+            return (x >= 0).float()
+
+        @staticmethod
+        def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+            x, = ctx.saved_tensors
+            grad = alpha / (2 * (1 + (torch.pi * alpha * x) ** 2))
+            return grad_output * grad
+    return _ATan
+
+
+def _make_fast_sigmoid_surrogate(slope: float):
+    """Create a FastSigmoid surrogate Function class with the given slope (thread-safe)."""
+    class _FastSigmoid(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x: torch.Tensor) -> torch.Tensor:
+            ctx.save_for_backward(x)
+            return (x >= 0).float()
+
+        @staticmethod
+        def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+            x, = ctx.saved_tensors
+            grad = slope / (2 * (1 + slope * x.abs()) ** 2)
+            return grad_output * grad
+    return _FastSigmoid
+
+
 def get_surrogate(name: str, **kwargs) -> Callable:
     """
     Get surrogate gradient function by name.
@@ -104,13 +136,11 @@ def get_surrogate(name: str, **kwargs) -> Callable:
         Surrogate gradient apply function
     """
     if name == "atan":
-        if "alpha" in kwargs:
-            ATanSurrogate.alpha = kwargs["alpha"]
-        return ATanSurrogate.apply
+        alpha = kwargs.get("alpha", ATanSurrogate.alpha)
+        return _make_atan_surrogate(alpha).apply
     elif name == "fast_sigmoid":
-        if "slope" in kwargs:
-            FastSigmoidSurrogate.slope = kwargs["slope"]
-        return FastSigmoidSurrogate.apply
+        slope = kwargs.get("slope", FastSigmoidSurrogate.slope)
+        return _make_fast_sigmoid_surrogate(slope).apply
     elif name == "straight_through":
         return StraightThroughSurrogate.apply
     else:

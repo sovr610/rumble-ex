@@ -304,14 +304,14 @@ class MetaConfig:
 @dataclass
 class EngramConfig:
     """Engram conditional memory configuration.
-    
+
     Production scale: ~2.5B parameters
     - Massive hash table for memory
     - Rich n-gram representations
     """
     # Vocabulary (modern scale)
     vocab_size: int = 128000  # Match modern tokenizers
-    compressed_vocab_size: int = 98560  # ~77% of vocab_size
+    compressed_vocab_size: Optional[int] = None  # Auto-computed as ~77% of vocab_size
 
     # Embeddings (production scale)
     embedding_dim: int = 4096  # Match workspace
@@ -333,6 +333,10 @@ class EngramConfig:
 
     # Gating (stable for production)
     gate_temperature: float = 0.5  # Sharper gating
+
+    def __post_init__(self):
+        if self.compressed_vocab_size is None:
+            self.compressed_vocab_size = int(self.vocab_size * 0.77)
 
 
 @dataclass
@@ -541,12 +545,12 @@ class BrainAIConfig:
     datasets: DatasetConfig = field(default_factory=DatasetConfig)
 
     # Feature flags (all enabled for production)
-    use_snn: bool = True
+    # Note: SNN is always active as it is intrinsic to the encoder pipeline
     use_htm: bool = True
     use_workspace: bool = True
     use_symbolic: bool = True
     use_meta: bool = True
-    use_engram: bool = True  # Enable engram for production
+    use_engram: bool = False  # Requires token_ids in input; enable explicitly
 
     # V-JEPA 2 integration
     vjepa2_encoder: VJEPA2EncoderConfig = field(default_factory=VJEPA2EncoderConfig)
@@ -595,12 +599,15 @@ class BrainAIConfig:
     @classmethod  
     def production_7b(cls) -> "BrainAIConfig":
         """Full 7B production configuration (default)."""
-        return cls()
+        config = cls()
+        config.use_engram = True
+        return config
 
     @classmethod
     def production_3b(cls) -> "BrainAIConfig":
         """Reduced 3B configuration for limited resources."""
         config = cls()
+        config.use_engram = True
         # Scale down by ~half
         config.encoder.output_dim = 2048
         config.encoder.text_num_layers = 16
@@ -619,6 +626,7 @@ class BrainAIConfig:
     def production_1b(cls) -> "BrainAIConfig":
         """Compact 1B configuration for efficient deployment."""
         config = cls()
+        config.use_engram = True
         config.encoder.output_dim = 1024
         config.encoder.text_num_layers = 12
         config.encoder.text_embed_dim = 1024

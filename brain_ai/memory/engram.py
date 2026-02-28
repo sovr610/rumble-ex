@@ -19,42 +19,9 @@ import torch.nn.functional as F
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple
 
+from ..config import EngramConfig
 from .tokenizer_compression import TokenizerCompression
 from .hash_embedding import MultiHeadHash, OffloadableEmbedding
-
-
-@dataclass
-class EngramConfig:
-    """Configuration for Engram module."""
-
-    # Vocabulary
-    vocab_size: int = 50000
-    compressed_vocab_size: Optional[int] = None  # ~77% of vocab_size if None
-
-    # Embeddings
-    embedding_dim: int = 256
-    ngram_orders: Tuple[int, ...] = (2, 3)  # Bigrams and trigrams
-    num_heads: int = 4
-    table_size: int = 10_000_003  # Prime number, production scale
-
-    # Tokenizer
-    tokenizer_mode: str = "shared"  # "shared" or "dedicated"
-    use_compression: bool = True
-
-    # Convolution
-    conv_kernel_size: int = 4
-    conv_dilation: int = 3
-
-    # Offloading
-    offload_to_cpu: bool = False
-    prefetch: bool = True
-
-    # Gating
-    gate_temperature: float = 1.0
-
-    def __post_init__(self):
-        if self.compressed_vocab_size is None:
-            self.compressed_vocab_size = int(self.vocab_size * 0.77)
 
 
 class RMSNorm(nn.Module):

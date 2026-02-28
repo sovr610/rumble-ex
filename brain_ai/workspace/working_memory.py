@@ -294,7 +294,8 @@ class WorkingMemory(nn.Module):
 
         # Memory buffer for capacity-limited storage
         # Stores up to K items (Miller's 7 +/- 2)
-        self.register_buffer('memory_buffer', None)
+        # Transient runtime state — not checkpointed
+        self.memory_buffer: Optional[torch.Tensor] = None
         self.capacity = 7
 
     def reset_state(self):

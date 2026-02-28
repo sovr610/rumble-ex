@@ -10,13 +10,19 @@ Meta-learning enables rapid adaptation to new tasks with minimal data,
 similar to how humans quickly learn new concepts from few examples.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Optional, Tuple, List, Callable
 from dataclasses import dataclass
 from copy import deepcopy
-import higher  # For differentiable optimization (optional)
+try:
+    import higher  # For differentiable optimization (optional)
+    HAS_HIGHER = True
+except ImportError:
+    HAS_HIGHER = False
 
 
 @dataclass
@@ -488,7 +494,7 @@ class PerLayerPerStepLR(nn.Module):
         # (num_steps, num_layers) learnable LRs
         # Initialize to small positive values
         self.log_lrs = nn.Parameter(
-            torch.full((num_steps, self.num_layers), fill_value=torch.tensor(init_lr).log())
+            torch.full((num_steps, self.num_layers), fill_value=math.log(init_lr))
         )
     
     def get_lr(self, step: int, layer_idx: int) -> torch.Tensor:
@@ -954,17 +960,28 @@ class TaskAwareMetaLearner(nn.Module):
         return self.model(query_x)
     
     def get_task_clusters(self, num_clusters: int = 5):
-        """Cluster stored task embeddings."""
+        """Cluster stored task embeddings.
+
+        Returns cluster labels and centroids if sklearn is available,
+        otherwise returns the raw stacked embeddings for external clustering.
+        """
         if len(self.task_embeddings) < num_clusters:
             return None
-        
+
         embeddings = torch.stack(self.task_embeddings)
-        
-        # Simple k-means style clustering
-        # In practice, use sklearn KMeans
-        from torch.cluster import KMeans  # Hypothetical
-        
-        return embeddings  # Return for external clustering
+
+        try:
+            from sklearn.cluster import KMeans
+            embeddings_np = embeddings.detach().cpu().numpy()
+            km = KMeans(n_clusters=num_clusters, n_init="auto")
+            labels = km.fit_predict(embeddings_np)
+            return {
+                "labels": torch.tensor(labels, device=embeddings.device),
+                "centroids": torch.tensor(km.cluster_centers_, device=embeddings.device),
+                "embeddings": embeddings,
+            }
+        except ImportError:
+            return {"embeddings": embeddings}
 
 
 def create_maml_plus_plus(
